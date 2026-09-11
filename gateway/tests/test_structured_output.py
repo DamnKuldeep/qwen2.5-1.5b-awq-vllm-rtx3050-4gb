@@ -211,12 +211,58 @@ def test_client_stream_options_are_merged_not_replaced(gateway, auth):
     assert captured["body"]["stream_options"]["include_usage"] is True
 
 
+def test_missing_max_tokens_is_bounded(gateway, auth):
+    """A request with no max_tokens must not reach the engine with none.
+
+    vLLM's OpenAI server defaults an absent max_tokens to the REST OF THE
+    CONTEXT WINDOW (max_model_len - input_length). On a 32k window that is
+    ~30,000 tokens of generation for a client that simply forgot the field -
+    holding one of six admission slots for minutes. The gateway injects a
+    bounded default so the admission limit means what it says.
+    """
+    client, captured = gateway
+    body = base_request()
+    body.pop("max_tokens", None)
+    resp = client.post("/v1/chat/completions", json=body, headers=auth)
+    assert resp.status_code == 200
+    assert isinstance(captured["body"].get("max_tokens"), int)
+    assert 0 < captured["body"]["max_tokens"] <= 2048
+
+
+def test_oversized_max_tokens_is_clamped_and_reported(gateway, auth):
+    """A client asking for 30,000 output tokens gets the ceiling, and is told."""
+    client, captured = gateway
+    resp = client.post(
+        "/v1/chat/completions", json=base_request(max_tokens=30_000), headers=auth
+    )
+    assert resp.status_code == 200
+    assert captured["body"]["max_tokens"] == 2048
+    assert resp.headers.get("X-Max-Tokens-Clamped-From") == "30000"
+
+
+def test_reasonable_max_tokens_is_untouched(gateway, auth):
+    """Inside the ceiling the client's value must arrive exactly as sent.
+
+    The bound exists to stop unbounded holds, not to second-guess a client
+    that asked for something sane. Altering a value inside the limit would be
+    the Boundary 1 failure wearing a different hat.
+    """
+    client, captured = gateway
+    resp = client.post(
+        "/v1/chat/completions", json=base_request(max_tokens=777), headers=auth
+    )
+    assert resp.status_code == 200
+    assert captured["body"]["max_tokens"] == 777
+    assert "X-Max-Tokens-Clamped-From" not in resp.headers
+
+
 def test_no_stream_options_added_to_non_streaming(gateway, auth):
-    """Non-streaming requests must not be modified at all.
+    """Non-streaming requests must not get stream_options.
 
     Usage is available directly in a non-streamed response body, so there is
-    no reason to touch the request. Injecting unconditionally would send a
-    parameter the client never asked for.
+    no reason to inject it. (The gateway DOES bound max_tokens on every
+    request, streaming or not - see the max_tokens tests above - because that
+    protects the admission limit rather than the billing path.)
     """
     client, captured = gateway
     resp = client.post("/v1/chat/completions", json=base_request(), headers=auth)

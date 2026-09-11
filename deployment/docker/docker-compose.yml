@@ -166,6 +166,15 @@ services:
       # reading one byte per second cannot hold capacity indefinitely.
       GATEWAY_STREAM_TIMEOUT_S: ${GATEWAY_STREAM_TIMEOUT_S:-300}
 
+      # Output bound. vLLM defaults an ABSENT max_tokens to the rest of the
+      # context window - ~30,000 tokens on a 32k window - so a client that
+      # forgets the field can hold one of six slots for minutes. The gateway
+      # injects the default when the field is missing and clamps anything
+      # above the ceiling (reported in X-Max-Tokens-Clamped-From). At ~14 ms
+      # per token at six concurrent, 2,048 tokens is a ~30 s worst-case hold.
+      GATEWAY_DEFAULT_MAX_TOKENS: ${GATEWAY_DEFAULT_MAX_TOKENS:-1024}
+      GATEWAY_MAX_OUTPUT_TOKENS: ${GATEWAY_MAX_OUTPUT_TOKENS:-2048}
+
     volumes:
       # Usage and budgets survive `docker compose down` and rebuilds. Without
       # this the database would live in the container's writable layer and

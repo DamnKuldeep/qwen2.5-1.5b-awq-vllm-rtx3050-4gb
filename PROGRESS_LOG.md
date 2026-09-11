@@ -1886,3 +1886,19 @@ docker compose ps        # wait for vllm to read "healthy" - takes 60-90 s
 4. **Speculative decoding** — never attempted; `ramp.py --echo-task` exists for it.
 5. **Multi-replica accounting.** SQLite has one writer. Postgres or Redis with atomic decrements, plus a test that Boundary 4 still holds under concurrent writers.
 6. **`--gpu-memory-utilization` above 0.78.** Headroom exists but taking it makes startup depend on desktop VRAM state, which breaks "one command brings the stack up".
+
+---
+
+## Post-publication — the output bound the "22 users" question exposed — 2026-09-11
+
+Asked precisely what the capacity figure bounds — context length, maximum output per call, what happens without an EOS — the answer turned up a gap. **vLLM's OpenAI server defaults an absent `max_tokens` to `max_model_len − input_length`** (read from `entrypoints/utils.py:get_max_tokens` in the image, not assumed). On the 32,768-token window a client that simply omits the field asks for ~30,000 tokens of generation, and a model that does not emit EOS delivers them: one of six admission slots held for seven-plus minutes, ended only by the 300 s stream timeout cutting the answer off.
+
+An admission limit whose per-slot hold time is unbounded is a limit on *count*, not on *work*, and the capacity arithmetic does not hold under it.
+
+**Fixed:** the gateway injects `max_tokens=1024` when the field is absent and clamps values above 2,048, reporting the clamp in `X-Max-Tokens-Clamped-From`. Both are additions, not removals — the same class of modification as `stream_options.include_usage`, so Boundary 1 is intact. Three contract tests added (absent → bounded, oversized → clamped and reported, sane value → untouched): **25 passed**.
+
+**The envelope, stated.** README now carries a table of what "22 users" assumes on every axis — concurrency, think time, output per turn, conversation length, prompt size, window, output cap, EOS behaviour, stream bound, thermal state, SLO definition — and what happens outside each. `CAPACITY_MODEL.md` gains the output-length derivation: at 12 s think time, 192-token replies → ~22 users, 512 → ~12, 1,024 → ~8, 2,048 → ~6. **Reply length is the strongest capacity lever after concurrency**, and it is a product decision.
+
+README reoriented around the inference engineering: a decision → before → after table for every change that moved a number, and a "what watches it" section for the predictive signals and the failure matrix.
+
+**Status:** pushed

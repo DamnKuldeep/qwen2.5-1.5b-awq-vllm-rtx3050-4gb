@@ -58,10 +58,23 @@ VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8000")
 # just as much as to the model name.
 FALLBACK_MAX_MODEL_LEN = int(os.getenv("GATEWAY_MAX_MODEL_LEN", "32768"))
 
-# Reply budget assumed when a client does not send max_tokens. It has to be
-# reserved out of the context window regardless, because --max-model-len caps
-# prompt PLUS generation.
+# Reply budget: the default when a client sends no max_tokens, and the ceiling
+# when it sends a large one. Both are INJECTED into the request.
+#
+# WHY THIS IS NOT OPTIONAL. vLLM's OpenAI server, when max_tokens is absent,
+# uses `max_model_len - input_length` (entrypoints/utils.py:get_max_tokens).
+# With a 32,768-token window that means a client omitting the field asks for
+# ~30,000 tokens of generation - and a model that does not emit EOS will
+# deliver them, holding an admission slot for seven-plus minutes at ~14 ms per
+# token. The stream timeout would eventually cut it, mid-answer. An admission
+# limit of six slots whose hold time is unbounded is not a limit.
+#
+# So the gateway bounds it. The default is generous for chat (1,024 tokens is
+# roughly 750 words); the ceiling is what the chat UI's continuation logic
+# assumes one round can be. Neither drops a field - Boundary 1 forbids that -
+# they add one, the same way stream_options.include_usage is added.
 DEFAULT_MAX_TOKENS = int(os.getenv("GATEWAY_DEFAULT_MAX_TOKENS", "1024"))
+MAX_OUTPUT_TOKENS = int(os.getenv("GATEWAY_MAX_OUTPUT_TOKENS", "2048"))
 
 # Generation can legitimately run long — the Stage 2 baseline measured P99
 # end-to-end latency of 8.96 s at concurrency 8. read=None disables the read
@@ -500,13 +513,26 @@ async def chat_completions(request: Request):
     # than occupying a slot and then being refused by the engine.
     trimmed_count = 0
     est_prompt_tokens = 0
+    clamped_from = 0
     if parsed and isinstance(payload.get("messages"), list):
         window = await get_max_model_len(request.app)
-        reply_budget = payload.get("max_tokens") or payload.get("max_completion_tokens") or DEFAULT_MAX_TOKENS
+        # Bound the reply. Absent -> inject the default; over the ceiling ->
+        # clamp and say so in a header. Whichever field the client used is
+        # the one written back, so an OpenAI-style client sees its own field.
+        field = "max_completion_tokens" if payload.get("max_completion_tokens") else "max_tokens"
         try:
-            reply_budget = int(reply_budget)
+            requested = int(payload.get(field) or 0)
         except (TypeError, ValueError):
+            requested = 0
+        if requested <= 0:
             reply_budget = DEFAULT_MAX_TOKENS
+            payload[field] = reply_budget
+        elif requested > MAX_OUTPUT_TOKENS:
+            reply_budget = MAX_OUTPUT_TOKENS
+            payload[field] = reply_budget
+            clamped_from = requested
+        else:
+            reply_budget = requested
         kept, trimmed_count, est_prompt_tokens = context.fit_messages(
             payload["messages"], window, reply_budget
         )
@@ -596,6 +622,8 @@ async def chat_completions(request: Request):
         # Surfaced so a client can tell the difference between "the model
         # forgot" and "the gateway dropped the oldest turns to make it fit".
         resp_headers["X-Context-Trimmed-Messages"] = str(trimmed_count)
+    if clamped_from:
+        resp_headers["X-Max-Tokens-Clamped-From"] = str(clamped_from)
 
     # ---- Non-streaming: read fully, take usage from the response body -----
     if not is_stream:

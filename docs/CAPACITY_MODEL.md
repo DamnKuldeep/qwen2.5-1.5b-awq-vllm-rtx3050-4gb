@@ -126,6 +126,39 @@ amount of tail latency for a small amount of throughput.
 **This is why "how many users" has no single answer.** It is a function of think
 time, and think time is a property of the product, not the hardware.
 
+### Output length is the other half of the duty cycle
+
+Service time is mostly decode — ~14 ms per output token at six concurrent —
+so the reply length the product allows moves capacity as much as think time
+does. Holding think time at 12 s:
+
+| reply length | service time | duty cycle | usable users |
+| ---: | ---: | ---: | ---: |
+| 192 tokens *(measured)* | ~3.0 s | 20% | **~22** |
+| 512 tokens | ~7.5 s | 38% | ~12 |
+| 1,024 tokens *(gateway default)* | ~14.6 s | 55% | ~8 |
+| 2,048 tokens *(gateway ceiling)* | ~29 s | 71% | ~6 |
+
+Two consequences that were not obvious before this table existed:
+
+1. **The `max_tokens` a client sends is a capacity decision, not a UX one.**
+   A chat product that lets replies run to 1,000 tokens has a third of the
+   capacity of one that keeps them at 200, on identical hardware.
+
+2. **An absent `max_tokens` is the worst case, not a neutral one.** vLLM's
+   OpenAI server defaults it to `max_model_len − input_length` — on a 32k
+   window, ~30,000 tokens. A model that does not emit EOS holds a slot for
+   seven minutes. The gateway therefore injects a default (1,024) when the
+   field is missing and clamps anything above a ceiling (2,048), reporting
+   the clamp in `X-Max-Tokens-Clamped-From`. Without that bound the "6 in
+   flight" limit is a limit on *count*, not on *work*, and the capacity
+   arithmetic above does not hold.
+
+There is no priority or preemption for long generations. Continuous batching
+gives every running sequence one token per scheduler step, and a sequence
+holds its admission slot for the whole stream. What *can* starve others is a
+long **prefill** (case 3 in [FAILURE_MATRIX.md](FAILURE_MATRIX.md)), which is a different mechanism.
+
 ---
 
 ## 5. The other constraint: the shared prefix cache

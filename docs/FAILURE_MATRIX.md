@@ -27,7 +27,8 @@ Container-level cases (5, 6) are driven from the shell and shown inline below.
 | Context window | 32,768 tokens |
 | KV cache | 69,760 tokens (~1.86 GiB at 28.0 KiB/token) |
 | Engine concurrency cap | `--max-num-seqs 32` — deliberately above the gateway's limit |
-| Gateway admission | 6 in flight, 12 queued, 0.6 s queue timeout, 3 per key |
+| Gateway admission | 6 in flight, 12 queued, 0.6 s queue timeout, dynamic per-key share (cap 3), prompt-weighted cost |
+| Output bound | `max_tokens` default 1,024 if absent, ceiling 2,048 |
 | SLO | p95 TTFT < 1.5 s **for chat-length prompts (~500–1,000 tokens)** |
 
 The SLO qualifier is not pedantry. A 22,586-token prompt costs 13 s of prefill
