@@ -18,8 +18,18 @@ All measured, none assumed.
 | KV cache | **69,760 tokens** | vLLM startup log |
 | KV per token | **28.0 KiB** | `2 × 28 layers × 2 kv_heads × 128 head_dim × 2 bytes`, from `config.json` — and it back-solves exactly from the cache size |
 | Context window | **32,768** | model's `max_position_embeddings`, `rope_scaling: null` so it is a hard ceiling |
-| Concurrency at SLO | **6 requests** | `ramp.py`, p95 TTFT 1,005–1,135 ms with +24…33% margin |
+| Concurrency at SLO | **6 requests** | `ramp.py`, p95 TTFT 1,005–1,135 ms with +24…33% margin, on a card at its normal warm idle (~69 °C) |
+| Concurrency at SLO, deep heat-soak | **4 requests** | Same ramp with the card idling at ~78 °C beforehand: 6 fails by 7%. This is the thermal range, not measurement noise — see §6 |
 | Concurrency that fails | **12 requests** | p95 TTFT 2,043 ms, −36% margin |
+
+**To be unambiguous about which number is shipped:** the gateway admits **6**.
+That holds the SLO with margin in the thermal state a laptop reaches after a
+few minutes of use. After an hour of sustained load the same command measures
+a ceiling of 4, and the 6-slot limit will then let p95 drift ~7% over target
+before shedding catches it. The honest product statement is "6, degrading to 4
+when the chassis is saturated" — and the alert on sustained throughput below
+floor (`ThroughputBelowThermalFloor`) is what would tell an operator which
+state they are in.
 | Prefill rate | **≈3,070 tok/s** linear term | fitted across 471 / 6,774 / 22,586-token prompts |
 | Decode | **13–19 ms/token** | varies with sustained SM clock, see §6 |
 
