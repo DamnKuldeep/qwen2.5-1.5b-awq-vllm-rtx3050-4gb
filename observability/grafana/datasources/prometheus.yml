@@ -1,0 +1,24 @@
+# Grafana datasource provisioning - Stage 8.
+#
+# Provisioned as a file rather than clicked through the UI, so the dashboard
+# works on a fresh `docker compose up` with no manual setup. A dashboard that
+# needs someone to remember six configuration steps is a dashboard that stops
+# working the moment the volume is deleted.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # Service name on the Compose network. `proxy` access means Grafana's
+    # backend makes the request, so this resolves inside Docker rather than in
+    # the viewer's browser.
+    url: http://prometheus:9090
+    isDefault: true
+    # Not editable in the UI: this file is the source of truth, and a UI edit
+    # would be silently reverted on the next container restart, which is more
+    # confusing than not allowing it.
+    editable: false
+    jsonData:
+      timeInterval: 5s

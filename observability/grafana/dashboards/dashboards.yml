@@ -1,0 +1,21 @@
+# Grafana dashboard provider - Stage 8.
+#
+# Tells Grafana to load every .json dashboard it finds in this directory at
+# startup, so the dashboard ships with the repo instead of living only in one
+# person's Grafana volume.
+
+apiVersion: 1
+
+providers:
+  - name: inference-product
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    # Re-reads the directory periodically, so editing the JSON and refreshing
+    # the browser is enough during development - no container restart needed.
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

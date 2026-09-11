@@ -1,0 +1,9 @@
+[
+  {
+    "case": "3. Single ~26k-token prompt alongside normal traffic",
+    "expected": "short requests keep flowing; their TTFT rises but stays in low seconds",
+    "measured": "big prompt 20448 tok, TTFT 20833.1 ms; small requests p95 TTFT 737.7 ms alone -> 20526.3 ms during; 0 shed",
+    "verdict": "FINDING",
+    "detail": "8/8 concurrent short requests completed"
+  }
+]

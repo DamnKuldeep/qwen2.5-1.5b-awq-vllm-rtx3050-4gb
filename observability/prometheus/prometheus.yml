@@ -1,0 +1,66 @@
+# Prometheus configuration - Stage 8.
+#
+# BOUNDARY 3, MADE CONCRETE.
+# This scrapes vLLM's own /metrics endpoint DIRECTLY. No sidecar, no bridge, no
+# translation layer. The failure mode named in the reading is a monitoring
+# wrapper that faithfully forwards most of an engine's metrics while quietly
+# dropping the two that would have warned you first - KV cache utilisation and
+# prefix cache hit rate. Scraping the engine means nothing can be lost in
+# between, because there is no "in between".
+#
+# Both of those metrics have already earned their place in this project:
+#   - KV cache at 18.5% under load (Stage 2) is why Stage 9 hunts for a
+#     thermal/compute ceiling rather than a memory one.
+#   - Prefix cache hit rate reaching 88% across a conversation (Stage 6) is why
+#     chat TTFT stays flat as context grows.
+# A wrapper that dropped them would have made both findings invisible.
+
+global:
+  # 5s rather than the usual 15s. vLLM logs its own summary every 10 s, and
+  # Stage 9 ramps concurrency looking for the exact point an SLO breaks - a
+  # coarse scrape would smooth over the transition we are trying to find.
+  # The cost is more samples stored, which is irrelevant at this scale.
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+# Alert rules — v2. See alerts.yml for the selection criterion, which is
+# "alert on what PREDICTS failure, not what reports it". No Alertmanager is
+# wired up: PRODUCT_SPEC scopes out paging, and the rules are evaluable and
+# visible at http://localhost:9090/alerts without one. Adding Alertmanager is
+# a deployment detail; choosing the right expressions is the engineering.
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+
+  - job_name: vllm
+    metrics_path: /metrics
+    static_configs:
+      # Service name on the Compose network, not localhost - inside the
+      # Prometheus container, localhost is Prometheus.
+      - targets: ["vllm:8000"]
+        labels:
+          service: inference-engine
+
+  # The gateway's own metrics - v2. SEPARATE from the vllm job on purpose, and
+  # emphatically not a proxy of it. This endpoint only ever adds facts the
+  # engine cannot know, because they happen before a request reaches it:
+  # queue depth, requests shed by admission control and why, per-key limits,
+  # context trimming, and TTFT as the CLIENT sees it (which includes queue
+  # time, and is therefore the number a user actually experiences).
+  #
+  # Keeping the two jobs distinct is what preserves the Boundary 3 property:
+  # if this job dies, the engine's own metrics are entirely unaffected.
+  - job_name: gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gateway:8080"]
+        labels:
+          service: gateway
+
+  # Prometheus scraping itself. Useful for confirming the scrape pipeline is
+  # alive when a vLLM panel shows no data: if this job is up and vllm is down,
+  # the problem is the target, not Prometheus.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

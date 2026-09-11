@@ -1,0 +1,142 @@
+# Compose OVERRIDE for Stage 11 Experiment 3c: Qwen2.5-1.5B-Instruct-AWQ.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.1_5b-awq.yml up -d --force-recreate vllm
+#
+# Revert to the shipping model:
+#
+#   docker compose up -d --force-recreate vllm
+#
+# TRAP, HIT ONCE ALREADY: every subsequent compose command must carry the SAME
+# -f flags. Compose reconciles EVERY service against the files it was given, not
+# just the one you name - so `docker compose up -d --build gateway` without the
+# overrides silently recreated vllm with the base file's model, and a whole ramp
+# then returned 404s. Omitting -f is not "leave the others alone", it is "revert
+# the others".
+#
+# The ergonomic fix is to set it once for the shell:
+#
+#   $env:COMPOSE_FILE="docker-compose.yml;docker-compose.1_5b-awq.yml"
+#   Remove-Item Env:\COMPOSE_FILE      # back to the shipping config
+#
+# ramp.py now also checks /v1/models before starting and refuses to run against
+# the wrong engine.
+#
+# WHY THIS IS THE COMPARISON THAT MATTERS
+# ----------------------------------------
+# PROJECT_PLAN.md's Experiment (a) specifies "unquantized 1.5B vs AWQ 3B", which
+# tests whether dropping quantization helps. Experiment 3 answered that
+# decisively - no, the fp16 1.5B needs 2.887 GiB of weights against the 3B-AWQ's
+# 1.954 GiB and cannot start at 4096 context.
+#
+# But that is a strawman for the actual product decision. Nobody choosing
+# between these models would pick the fp16 variant when an official AWQ
+# checkpoint exists. DECISIONS.md named this model as the fallback from the
+# start: "Fallback if more KV-cache headroom is needed during concurrency
+# testing: Qwen/Qwen2.5-1.5B-Instruct-AWQ."
+#
+# Same quantization on both sides makes this a comparison of model size against
+# model quality, rather than of a format that does not fit. And unlike the fp16
+# variant it runs at the shipping --max-model-len 4096, so no configuration has
+# to be weakened to make the comparison possible.
+#
+# REVISION-PINNED as of Finalization Phase 0 (2026-09-08). It was not pinned
+# while it was only a Stage 11 comparison arm - a recorded deviation, acceptable
+# for a one-off measurement. This model is now the finalized model, so Boundary 2
+# applies to it and the pin is mandatory rather than tidy.
+#
+# Hash read from the downloaded snapshot, not from the Hub:
+#   docker run --rm -v hf-cache:/cache --entrypoint ls vllm/vllm-openai:v0.11.0 `
+#     /cache/hub/models--Qwen--Qwen2.5-1.5B-Instruct-AWQ/snapshots
+#   -> 3ecffa0ceb27851800f45519bab9c457a04405e1   (exactly one snapshot present)
+#
+# Pinning here CHANGES THE ENGINE CONFIG, which changes the torch.compile cache
+# key (Stage 1). The first launch after this edit therefore pays a fresh ~40 s
+# compile. That is why the pin lands before Phase 2 measures rather than after:
+# otherwise the "canonical" numbers would describe a config we do not ship, and
+# the recompile would land inside a measurement instead of a startup.
+#
+# Everything except the model is held identical to the 3B configuration.
+
+services:
+  vllm:
+    command:
+      - --model=Qwen/Qwen2.5-1.5B-Instruct-AWQ
+      - --revision=3ecffa0ceb27851800f45519bab9c457a04405e1
+      - --tokenizer-revision=3ecffa0ceb27851800f45519bab9c457a04405e1
+      - --quantization=awq_marlin
+      - --dtype=float16
+      # 32768 is the model's native maximum (config.json: max_position_embeddings
+      # 32768, rope_scaling null - so this is a hard ceiling, not YaRN-extendable).
+      #
+      # Raised from the inherited 4096 in Finalization Phase 2.5, and the inherited
+      # value was never re-derived after the model swap: 4096 was correct for the 3B,
+      # whose 36.1 KiB/token would have needed 1.15 GiB for one full sequence against
+      # 0.98 GiB of cache. The 1.5B costs 28.0 KiB/token, so 32768 needs 896 MiB
+      # against 1,859 MiB available.
+      #
+      # MEASURED, not assumed: KV cache size is 69,616 tokens at BOTH 4096 and 32768.
+      # Raising the ceiling costs no memory at all, because max-model-len is a ceiling
+      # rather than an allocation - PagedAttention allocates 16-token blocks on demand
+      # and the cache is sized from leftover memory regardless. Only the reported
+      # max-concurrency figure moves (17.00x -> 2.12x), and that describes a
+      # worst case in which every sequence runs to the full window.
+      #
+      # The real costs are latency and prefix-cache pressure, and both are policy
+      # questions rather than reasons to lower the ceiling:
+      #   - a full 32k prompt costs ~23 s of TTFT (measured quadratic prefill model)
+      #   - one 32k conversation occupies 47% of the shared 69,616-token prefix pool
+      # Capping at 16384 would not prevent either; it would only remove the capability.
+      - --max-model-len=${VLLM_MAX_MODEL_LEN:-32768}
+      # Raised 8 -> 32 in Finalization Phase 3, and NOT for throughput.
+      #
+      # 8 was sized in Stage 1 against the 3B's 28,480-token cache. The 1.5B has
+      # 69,616 tokens and sits at ~8% utilisation at concurrency 8, so the cap was
+      # binding long before memory was. Raising it moved peak throughput from
+      # ~367 to 686.3 tok/s (471 in / 512 out).
+      #
+      # But under the SLO it is worth nothing: the reliable ceiling is concurrency 6
+      # at BOTH values (+24% margin at 8, +33% at 32), and concurrency 12 fails by
+      # 36% either way. TTFT is prefill- and thermally-bound, not cap-bound. This is
+      # the same shape as Stage 11 Experiment 1, where +34% throughput bought zero
+      # SLO-compliant capacity.
+      #
+      # The reason to ship 32 is ARCHITECTURAL. v2 puts admission control in the
+      # gateway at ~6 concurrent. The engine cap must sit well above that so it can
+      # never be the binding constraint - one limiter, in the gateway, where the
+      # policy and the metrics live. A cap of 8 would silently shape traffic that
+      # the gateway believes it is controlling. At concurrency 16 the cost is nil:
+      # ITL p99 38.5 ms, KV cache ~17%, zero preemptions.
+      - --max-num-seqs=${VLLM_MAX_NUM_SEQS:-32}
+      - --max-num-batched-tokens=${VLLM_MAX_NUM_BATCHED_TOKENS:-2048}
+      # ---------------------------------------------------------------------
+      # HEAD-OF-LINE BLOCKING: attempted here, and it does not work on this
+      # build. Left as a comment because the next person will try it too.
+      #
+      # Worst case #3 measured a single ~20k-token prompt pushing concurrent
+      # short requests from 82 ms to 12,201 ms of TTFT - a 148x degradation.
+      # Chunked prefill alone does not prevent that, which was the assumption
+      # going in and it was wrong. The cause is visible in SchedulerConfig:
+      # `max_num_partial_prefills = 1`, so only ONE request may be mid-prefill
+      # and every short request queues behind all ten chunks of the long one.
+      #
+      # vLLM has exactly the right controls for this:
+      #   --max-num-partial-prefills=4
+      #   --max-long-partial-prefills=1
+      #   --long-prefill-token-threshold=2048
+      #
+      # They are accepted, they log "Concurrent partial prefills enabled", and
+      # then the server dies on `assert envs.VLLM_USE_V1` in a crash loop -
+      # 79 restarts before it was caught. Setting max_num_partial_prefills > 1
+      # silently falls back to the V0 engine, and vLLM 0.11.0's OpenAI API
+      # server requires V1. A feature that configures cleanly and then makes
+      # the server unstartable is worse than one that refuses the flag.
+      #
+      # The mitigation is therefore in the GATEWAY instead: long prompts are
+      # weighted to consume several admission slots, which bounds how much of
+      # the service one giant prefill can occupy. See gateway/admission.py.
+      # ---------------------------------------------------------------------
+      - --gpu-memory-utilization=0.78
+      - --enable-prefix-caching
+      - --swap-space=2
+      - --host=0.0.0.0
+      - --port=8000

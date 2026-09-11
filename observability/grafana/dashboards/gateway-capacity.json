@@ -1,0 +1,155 @@
+{
+  "uid": "gateway-capacity",
+  "title": "Gateway capacity and admission control",
+  "tags": ["v2", "capacity", "admission"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-30m", "to": "now" },
+  "description": "The v2 view: what the gateway decides, and the two engine signals that predict when those decisions start hurting. Deliberately separate from the vLLM engine dashboard - this one only shows facts the engine cannot know, because they happen before a request reaches it.",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Load shedding — the graceful-degradation evidence",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Client-observed TTFT (includes queue wait)",
+      "description": "The number a user actually feels. It includes time spent queued in the gateway, which vLLM's own TTFT histogram cannot see. The 1.5s threshold line is the stated SLO — and note it is defined for chat-length prompts of roughly 500 tokens; a workload of very long prompts breaches it legitimately.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 5 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1.5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum(rate(gateway_ttft_seconds_bucket[1m])) by (le))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum(rate(gateway_ttft_seconds_bucket[1m])) by (le))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum(rate(gateway_ttft_seconds_bucket[1m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Admitted vs shed (requests/s)",
+      "description": "The graph that proves degradation is bounded. As offered load rises past capacity, admitted flattens and shed absorbs the excess — instead of both being accepted and everyone waiting. A non-zero shed rate under burst is correct behaviour, not an incident.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "shed (503)" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
+          { "matcher": { "id": "byName", "options": "admitted" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
+        ]
+      },
+      "targets": [
+        { "refId": "A", "expr": "rate(gateway_admitted_total[1m])", "legendFormat": "admitted" },
+        { "refId": "B", "expr": "sum(rate(gateway_rejected_total[1m]))", "legendFormat": "shed (503)" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "In-flight vs queue depth vs limit",
+      "description": "Queue depth rises BEFORE TTFT does, because a request has to wait before it can be slow. This is the leading indicator: sustained depth above ~3 means arrivals exceed service rate and shedding is imminent.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "refId": "A", "expr": "gateway_inflight", "legendFormat": "in flight" },
+        { "refId": "B", "expr": "gateway_queue_depth", "legendFormat": "queued" },
+        { "refId": "C", "expr": "gateway_max_inflight", "legendFormat": "limit" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Why requests were shed",
+      "description": "'We are full' and 'you personally are using too much' are different problems with different fixes, so they are counted separately. per_key_limit rising alone means one tenant is misbehaving while the service is fine.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" } } } },
+      "targets": [
+        { "refId": "A", "expr": "rate(gateway_rejected_total[1m])", "legendFormat": "{{reason}}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Engine signals that predict capacity loss",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Prefix cache hit rate — THE capacity signal",
+      "description": "The KV cache is one shared pool of ~69,760 tokens, not a per-user allocation. When the working set of active conversations stops fitting, hit rate collapses and every turn re-prefills its whole history at roughly 9x the cost of a hit. This falls BEFORE latency rises, because spare capacity absorbs the extra prefill first — which is what makes it predictive rather than merely descriptive.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 19 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1,
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null }, { "color": "green", "value": 0.35 } ] }
+        }
+      },
+      "targets": [
+        { "refId": "A",
+          "expr": "rate(vllm:prefix_cache_hits_total[2m]) / clamp_min(rate(vllm:prefix_cache_queries_total[2m]), 1)",
+          "legendFormat": "hit rate" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "KV cache usage and preemptions",
+      "description": "Normal operation for this deployment is 8-17%. Preemption means the engine evicted a running sequence and will recompute it, so throughput is being spent twice on the same tokens. Metric name is kv_cache_usage_perc — gpu_cache_usage_perc was guessed once in this project and produced a panel that silently showed nothing.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 19 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "refId": "A", "expr": "vllm:kv_cache_usage_perc", "legendFormat": "KV cache used" },
+        { "refId": "B", "expr": "increase(vllm:num_preemptions_total[1m])", "legendFormat": "preemptions/min" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Engine concurrency and throughput",
+      "description": "Running should track the gateway's in-flight count closely. If running is persistently lower, something between the gateway and the engine is the constraint; if waiting is non-zero, the engine's own scheduler is queueing behind --max-num-seqs, which for this deployment is set to 32 precisely so it never binds before the gateway does.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "refId": "A", "expr": "vllm:num_requests_running", "legendFormat": "running" },
+        { "refId": "B", "expr": "vllm:num_requests_waiting", "legendFormat": "waiting in engine" },
+        { "refId": "C", "expr": "rate(vllm:generation_tokens_total[1m])", "legendFormat": "output tok/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Context trimming",
+      "description": "Non-zero means conversations are outgrowing the 32,768-token window and the gateway is dropping their oldest turns to keep them alive. Each trim is also a guaranteed prefix-cache miss, because the hash chain is invalidated from the first changed block onward — so a rise here should be visible as a dip in hit rate above.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 20 } } },
+      "targets": [
+        { "refId": "A", "expr": "rate(gateway_context_trimmed_total[5m]) * 60", "legendFormat": "conversations trimmed/min" },
+        { "refId": "B", "expr": "rate(gateway_context_trimmed_messages_total[5m]) * 60", "legendFormat": "messages dropped/min" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Errors: upstream failures and billing write failures",
+      "description": "Billing write failures are critical rather than cosmetic: non-zero means GPU work is being served that cannot be accounted for. The budget CHECK fails closed (refuse new work); the budget WRITE fails soft (never damage a response that already succeeded), and this counter is what makes the soft failure visible instead of silent.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 36 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 20 } } },
+      "targets": [
+        { "refId": "A", "expr": "increase(gateway_upstream_errors_total[5m])", "legendFormat": "upstream errors / 5m" },
+        { "refId": "B", "expr": "increase(gateway_billing_write_errors_total[5m])", "legendFormat": "billing write failures / 5m" },
+        { "refId": "C", "expr": "sum by (status) (increase(gateway_requests_total[5m]))", "legendFormat": "HTTP {{status}} / 5m" }
+      ]
+    }
+  ]
+}

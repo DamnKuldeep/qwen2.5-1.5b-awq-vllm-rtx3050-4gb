@@ -1,0 +1,293 @@
+{
+  "config": {
+    "users": 20,
+    "pattern": "steady",
+    "turns": 6,
+    "think_mean": 12.0,
+    "think_sigma": 0.6,
+    "conversation_mix": "1000",
+    "duration": 120.0,
+    "max_tokens": 192,
+    "seed": 42,
+    "slo_ttft_ms": 1500.0,
+    "abusive_concurrency": 0,
+    "label": "cache_conv1000tok"
+  },
+  "engine": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct-AWQ",
+    "max_model_len": 32768
+  },
+  "admission": {
+    "inflight": 0,
+    "waiting": 0,
+    "max_inflight": 6,
+    "max_queue": 12,
+    "max_inflight_per_key": 3,
+    "slots_used": 0,
+    "long_prompt_tokens": 2048,
+    "max_request_cost": 4,
+    "weighted_admissions": 65,
+    "active_keys": 0,
+    "current_share_per_key": 3,
+    "admitted_total": 894,
+    "rejected_total": {
+      "queue_timeout": 543,
+      "per_key_limit": 23
+    },
+    "peak_inflight": 6,
+    "peak_waiting": 8,
+    "mean_queue_wait_ms": 96.15
+  },
+  "totals": {
+    "turns_attempted": 119,
+    "turns_ok": 65,
+    "turns_shed_503": 54,
+    "turns_error": 0,
+    "shed_rate_pct": 45.38,
+    "output_tokens": 12480,
+    "output_tok_per_s": 108.4,
+    "mean_prompt_tokens": 730.4
+  },
+  "ttft_ms_all_requests": {
+    "p50": 365.3,
+    "p95": 872.2,
+    "p99": 974.0,
+    "max": 974.0
+  },
+  "ttft_ms_per_user_p95": {
+    "median_user": 667.8,
+    "worst_user": 974.0,
+    "users_breaching_slo": 0,
+    "users_total": 20
+  },
+  "prefix_cache": {
+    "queries_delta": 47555.0,
+    "hits_delta": 31344.0,
+    "hit_rate_pct": 65.91,
+    "preemptions_delta": 0.0
+  },
+  "abusive": null,
+  "per_user": [
+    {
+      "user": 0,
+      "turns": 6,
+      "ok": 1,
+      "shed": 5,
+      "errors": 0,
+      "ttft_p50": 799.0,
+      "ttft_p95": 799.0,
+      "ttft_max": 799.0,
+      "mean_conversation_tokens": 82
+    },
+    {
+      "user": 1,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 179.9,
+      "ttft_p95": 311.5,
+      "ttft_max": 311.5,
+      "mean_conversation_tokens": 403.2
+    },
+    {
+      "user": 2,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 586.4,
+      "ttft_p95": 695.0,
+      "ttft_max": 695.0,
+      "mean_conversation_tokens": 911
+    },
+    {
+      "user": 3,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 182.4,
+      "ttft_p95": 285.1,
+      "ttft_max": 285.1,
+      "mean_conversation_tokens": 293
+    },
+    {
+      "user": 4,
+      "turns": 6,
+      "ok": 2,
+      "shed": 4,
+      "errors": 0,
+      "ttft_p50": 275.8,
+      "ttft_p95": 328.9,
+      "ttft_max": 328.9,
+      "mean_conversation_tokens": 806.5
+    },
+    {
+      "user": 5,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 145.4,
+      "ttft_p95": 239.2,
+      "ttft_max": 239.2,
+      "mean_conversation_tokens": 296.7
+    },
+    {
+      "user": 6,
+      "turns": 6,
+      "ok": 2,
+      "shed": 4,
+      "errors": 0,
+      "ttft_p50": 365.3,
+      "ttft_p95": 432.5,
+      "ttft_max": 432.5,
+      "mean_conversation_tokens": 804.5
+    },
+    {
+      "user": 7,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 326.0,
+      "ttft_p95": 832.4,
+      "ttft_max": 832.4,
+      "mean_conversation_tokens": 1019.5
+    },
+    {
+      "user": 8,
+      "turns": 6,
+      "ok": 5,
+      "shed": 1,
+      "errors": 0,
+      "ttft_p50": 312.4,
+      "ttft_p95": 679.9,
+      "ttft_max": 679.9,
+      "mean_conversation_tokens": 503.8
+    },
+    {
+      "user": 9,
+      "turns": 5,
+      "ok": 3,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 310.1,
+      "ttft_p95": 680.5,
+      "ttft_max": 680.5,
+      "mean_conversation_tokens": 912
+    },
+    {
+      "user": 10,
+      "turns": 6,
+      "ok": 2,
+      "shed": 4,
+      "errors": 0,
+      "ttft_p50": 626.1,
+      "ttft_p95": 654.5,
+      "ttft_max": 654.5,
+      "mean_conversation_tokens": 806.5
+    },
+    {
+      "user": 11,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 546.6,
+      "ttft_p95": 904.4,
+      "ttft_max": 904.4,
+      "mean_conversation_tokens": 912
+    },
+    {
+      "user": 12,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 390.7,
+      "ttft_p95": 667.8,
+      "ttft_max": 667.8,
+      "mean_conversation_tokens": 912.7
+    },
+    {
+      "user": 13,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 275.2,
+      "ttft_p95": 880.3,
+      "ttft_max": 880.3,
+      "mean_conversation_tokens": 400
+    },
+    {
+      "user": 14,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 442.1,
+      "ttft_p95": 872.2,
+      "ttft_max": 872.2,
+      "mean_conversation_tokens": 1019.5
+    },
+    {
+      "user": 15,
+      "turns": 6,
+      "ok": 5,
+      "shed": 1,
+      "errors": 0,
+      "ttft_p50": 531.9,
+      "ttft_p95": 974.0,
+      "ttft_max": 974.0,
+      "mean_conversation_tokens": 1126.8
+    },
+    {
+      "user": 16,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 232.7,
+      "ttft_p95": 661.6,
+      "ttft_max": 661.6,
+      "mean_conversation_tokens": 399.2
+    },
+    {
+      "user": 17,
+      "turns": 6,
+      "ok": 2,
+      "shed": 4,
+      "errors": 0,
+      "ttft_p50": 123.3,
+      "ttft_p95": 542.6,
+      "ttft_max": 542.6,
+      "mean_conversation_tokens": 186.5
+    },
+    {
+      "user": 18,
+      "turns": 6,
+      "ok": 5,
+      "shed": 1,
+      "errors": 0,
+      "ttft_p50": 425.0,
+      "ttft_p95": 662.1,
+      "ttft_max": 662.1,
+      "mean_conversation_tokens": 1124.6
+    },
+    {
+      "user": 19,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 617.0,
+      "ttft_p95": 686.6,
+      "ttft_max": 686.6,
+      "mean_conversation_tokens": 911.3
+    }
+  ],
+  "turns": []
+}

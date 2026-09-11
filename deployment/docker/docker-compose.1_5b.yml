@@ -1,0 +1,47 @@
+# Compose OVERRIDE for Stage 11 Experiment 3: Qwen2.5-1.5B-Instruct, unquantized.
+#
+# Layered on top of docker-compose.yml, which is left untouched:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.1_5b.yml up -d --force-recreate vllm
+#
+# Revert to the shipping model with the normal command:
+#
+#   docker compose up -d --force-recreate vllm
+#
+# WHY AN OVERRIDE FILE RATHER THAN MORE ${VARIABLES}
+# ---------------------------------------------------
+# --max-num-seqs was parameterised for Experiment 1 because only its value
+# changed. Here the SHAPE of the command changes: the 1.5B model is not
+# quantized, so `--quantization=awq_marlin` must be absent rather than set to
+# something else, and the 3B's pinned `--revision` hash does not apply to a
+# different repository. Compose replaces the whole `command` list on override,
+# which is exactly the semantics needed.
+#
+# DEVIATION FROM BOUNDARY 2, RECORDED HONESTLY
+# ---------------------------------------------
+# This model is NOT revision-pinned - we did not read its commit hash before
+# downloading. That is acceptable for a one-off comparison whose result is
+# recorded as a single measurement, but it would not be acceptable for anything
+# shipped. If the 1.5B were ever adopted, its revision must be pinned first.
+#
+# Everything else is held identical to the 3B configuration so the comparison
+# isolates the model, not the settings.
+
+services:
+  vllm:
+    command:
+      - --model=Qwen/Qwen2.5-1.5B-Instruct
+      - --dtype=float16
+      # Same variable as the 3B service, so both arms of the head-to-head are
+      # guaranteed to use an identical context length. At the shipping 4096
+      # this model cannot start at all (0.07 GiB of KV cache against 0.11 GiB
+      # needed) - that is Experiment 3's result. 2048 is the largest value at
+      # which a comparison is possible.
+      - --max-model-len=${VLLM_MAX_MODEL_LEN:-4096}
+      - --max-num-seqs=8
+      - --max-num-batched-tokens=2048
+      - --gpu-memory-utilization=0.78
+      - --enable-prefix-caching
+      - --swap-space=2
+      - --host=0.0.0.0
+      - --port=8000

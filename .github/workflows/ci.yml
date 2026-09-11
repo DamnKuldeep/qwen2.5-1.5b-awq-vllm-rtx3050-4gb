@@ -1,0 +1,51 @@
+# CI - runs the gateway's contract tests and sanity-checks the compose files
+# on every push and pull request.
+#
+# WHAT THIS DOES NOT DO, on purpose: it never starts vLLM and never touches a
+# GPU. GitHub's hosted runners have neither, and this project's headline
+# capacity numbers (docs/CAPACITY_MODEL.md, README.md) are real hardware
+# measurements taken on one specific RTX 3050 - they cannot be validated by a
+# CI runner and this workflow makes no claim to. What it DOES prove, on every
+# change: the gateway's own logic (auth, budgets, context trimming, the
+# untyped-dict field-preservation contract from Boundary 1) still behaves the
+# way the docs say it does, and both compose files still parse and resolve.
+# The `integration` tests, which need the full running stack, stay excluded
+# by pytest.ini's default -m "not integration" - correctly, since this runner
+# has no engine for them to run against.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  contract-tests:
+    name: Gateway contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: pip install -r gateway/requirements-dev.txt
+
+      - name: Run contract tests (no GPU, no running engine - stubbed upstream)
+        run: pytest
+
+  compose-config:
+    name: Validate docker-compose files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Base compose file resolves
+        working-directory: deployment/docker
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: 1.5B-AWQ override merges cleanly (the shipped config)
+        working-directory: deployment/docker
+        run: docker compose -f docker-compose.yml -f docker-compose.1_5b-awq.yml config --quiet

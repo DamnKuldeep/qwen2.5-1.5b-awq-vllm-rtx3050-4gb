@@ -1,0 +1,191 @@
+{# Product usage dashboard — server-rendered with Jinja2.
+
+   Jinja2 is a templating engine: {{ ... }} substitutes a value, {% ... %} is
+   control flow. FastAPI renders this server-side and sends finished HTML, so
+   there is no frontend framework, no build step, and no JavaScript needed to
+   display data.
+
+   Why server-rendered rather than a JS app (DECISIONS.md): keeps v1 minimal,
+   and keeps the conceptual separation visible — Grafana is the infrastructure
+   dashboard, this is the product dashboard, and they should look and be built
+   like different things rather than two tabs of the same tool. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Product Usage — Inference Gateway</title>
+  <style>
+    :root {
+      --bg: #f7f7f5; --card: #ffffff; --ink: #1a1a18; --muted: #6b6b66;
+      --line: #e3e3df; --accent: #2f6f4f; --warn: #b8860b; --danger: #a33a3a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16161a; --card: #1e1e24; --ink: #ececf0; --muted: #9a9aa4;
+        --line: #2e2e38; --accent: #6fbf95; --warn: #d9a441; --danger: #e07a7a;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 32px 24px; background: var(--bg); color: var(--ink);
+      font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; }
+    header { margin-bottom: 28px; }
+    h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+    .sub { color: var(--muted); font-size: 13px; }
+    .sub code { background: var(--card); padding: 1px 5px; border-radius: 4px;
+                border: 1px solid var(--line); font-size: 12px; }
+    h2 { font-size: 15px; margin: 32px 0 12px; letter-spacing: -0.005em; }
+
+    .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+    .tile .label { color: var(--muted); font-size: 11px; text-transform: uppercase;
+                   letter-spacing: 0.06em; margin-bottom: 6px; }
+    .tile .value { font-size: 22px; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+    .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11px;
+         text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 14px;
+         border-bottom: 1px solid var(--line); white-space: nowrap; }
+    td { padding: 9px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+
+    .bar { position: relative; height: 6px; background: var(--line); border-radius: 3px;
+           overflow: hidden; min-width: 110px; margin-top: 5px; }
+    .bar > span { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+    .bar.warn > span { background: var(--warn); }
+    .bar.danger > span { background: var(--danger); }
+
+    .pill { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 11px;
+            font-weight: 600; font-variant-numeric: tabular-nums; }
+    .ok { color: var(--accent); } .err { color: var(--danger); }
+    .empty { padding: 28px 16px; text-align: center; color: var(--muted); }
+    footer { margin-top: 36px; color: var(--muted); font-size: 12px;
+             border-top: 1px solid var(--line); padding-top: 14px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Product Usage</h1>
+    <div class="sub">
+      Who is using this API and how much of it. For system health — GPU, KV cache,
+      throughput — see Grafana. Upstream engine: <code>{{ vllm_url }}</code>
+    </div>
+  </header>
+
+  {# Summary tiles: totals across every key, all time. #}
+  <div class="tiles">
+    <div class="tile">
+      <div class="label">Requests</div>
+      <div class="value">{{ "{:,}".format(summary.request_count) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Prompt tokens</div>
+      <div class="value">{{ "{:,}".format(summary.prompt_tokens) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Completion tokens</div>
+      <div class="value">{{ "{:,}".format(summary.completion_tokens) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Total tokens</div>
+      <div class="value">{{ "{:,}".format(summary.total_tokens) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Errors</div>
+      <div class="value {% if summary.error_count %}err{% endif %}">{{ "{:,}".format(summary.error_count) }}</div>
+    </div>
+  </div>
+
+  <h2>API keys and budgets</h2>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Key</th><th>Name</th><th class="num">Requests</th>
+          <th class="num">Used</th><th class="num">Budget</th>
+          <th class="num">Remaining</th><th>Consumption</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for k in keys %}
+        {# Percent drives both the bar width and its colour. Over 100% is
+           possible and expected: the budget is checked before a request and
+           deducted after it, so an in-flight request can overshoot. #}
+        {% set pct = (k.tokens_used / k.token_budget * 100) if k.token_budget else 0 %}
+        <tr>
+          <td class="mono">{{ k.key }}</td>
+          <td>{{ k.name }}</td>
+          <td class="num">{{ "{:,}".format(k.request_count) }}</td>
+          <td class="num">{{ "{:,}".format(k.tokens_used) }}</td>
+          <td class="num">{{ "{:,}".format(k.token_budget) }}</td>
+          <td class="num">
+            {% if k.tokens_remaining <= 0 %}
+              <span class="pill err">exhausted</span>
+            {% else %}
+              {{ "{:,}".format(k.tokens_remaining) }}
+            {% endif %}
+          </td>
+          <td>
+            <div class="num mono">{{ "%.1f"|format(pct) }}%</div>
+            <div class="bar {% if pct >= 100 %}danger{% elif pct >= 75 %}warn{% endif %}">
+              <span style="width: {{ [pct, 100]|min }}%"></span>
+            </div>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="empty">No API keys. Run <code>python -m gateway.seed_db</code>.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Recent requests</h2>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th><th>Time (UTC)</th><th>Key</th><th>Model</th>
+          <th class="num">Prompt</th><th class="num">Completion</th><th class="num">Total</th>
+          <th>Stream</th><th class="num">Duration</th><th class="num">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in history %}
+        <tr>
+          <td class="num mono">{{ r.id }}</td>
+          <td class="mono">{{ r.created_at }}</td>
+          <td class="mono">{{ r.api_key }}</td>
+          <td class="mono">{{ (r.model or "—").split("/")|last }}</td>
+          <td class="num">{{ "{:,}".format(r.prompt_tokens) }}</td>
+          <td class="num">{{ "{:,}".format(r.completion_tokens) }}</td>
+          <td class="num">{{ "{:,}".format(r.total_tokens) }}</td>
+          <td>{{ "yes" if r.streamed else "no" }}</td>
+          <td class="num">{{ "{:,}".format(r.duration_ms or 0) }} ms</td>
+          <td class="num"><span class="pill {{ 'ok' if r.status_code < 400 else 'err' }}">{{ r.status_code }}</span></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="10" class="empty">No requests recorded yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    Budget refusals (429) are recorded here with zero tokens — a dashboard showing
+    only served requests would hide the signal an operator opens this page for.
+    Invalid-key rejections (401) are not recorded: there is no valid key to attribute
+    them to. A streamed request shows token counts only because the gateway injects
+    <code>stream_options.include_usage</code>; vLLM reports no usage for a stream otherwise.
+  </footer>
+
+</div>
+</body>
+</html>

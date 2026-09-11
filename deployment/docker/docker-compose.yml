@@ -1,0 +1,239 @@
+# The whole stack, one command - Stage 7.
+#
+#   cd deployment/docker
+#   docker compose up --build
+#
+# Brings up vLLM and the gateway. Prometheus and Grafana are defined here but
+# sit behind a profile and do not start until Stage 8 creates their config:
+#
+#   docker compose --profile observability up -d
+#
+# Reachable at:
+#   http://localhost:8000       vLLM directly (and /metrics for Stage 8)
+#   http://localhost:8080/chat  chat UI
+#   http://localhost:8080/dashboard  product usage dashboard
+#   http://localhost:3000       Grafana (Stage 8)
+
+name: inference-product
+
+services:
+
+  # ---------------------------------------------------------------------
+  # The inference engine. Flags are the Stage 1 set, unchanged - they were
+  # derived from this machine's 4 GiB budget and are explained in DECISIONS.md.
+  # Keep in sync with deployment/docker/run_vllm.ps1.
+  # ---------------------------------------------------------------------
+  vllm:
+    image: vllm/vllm-openai:v0.11.0
+    container_name: vllm
+    restart: unless-stopped
+
+    # Docker's default /dev/shm is 64 MB. PyTorch uses shared memory for
+    # inter-process tensor passing and dies with cryptic bus errors when it
+    # runs out. Equivalent to --ipc=host on docker run.
+    ipc: host
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+      # Separate volume for the torch.compile cache, which lives at
+      # /root/.cache/vllm - OUTSIDE the huggingface cache. Stage 1's notes
+      # wrongly assumed hf-cache covered it; it did not, so every `docker run
+      # --rm` launch paid the full ~60 s compile. Mounting it makes restarts
+      # genuinely fast, which matters for Stage 10 (killing and restarting
+      # vLLM mid-load-test) and Stage 11 (many launches, one per variant).
+      - vllm-cache:/root/.cache/vllm
+
+    command:
+      - --model=Qwen/Qwen2.5-3B-Instruct-AWQ
+      - --revision=3559b226e8ce77211e2c1bd7ddfb7686fec4d6dd
+      - --tokenizer-revision=3559b226e8ce77211e2c1bd7ddfb7686fec4d6dd
+      - --quantization=awq_marlin
+      - --dtype=float16
+      # Parameterised for Stage 11 Experiment 3b. The shipping value is 4096
+      # (Stage 1). Lowered to 2048 only for the head-to-head against the
+      # unquantized 1.5B, which cannot start at 4096 - both arms must use the
+      # same value for the comparison to mean anything.
+      #
+      #   $env:VLLM_MAX_MODEL_LEN=2048
+      - --max-model-len=${VLLM_MAX_MODEL_LEN:-4096}
+      # Parameterised for Stage 11 Experiment 1. Default 8 is the Stage 1 value,
+      # sized against a 4,096-token worst case. Stage 9 and the Stage 11
+      # baseline both found it to be the binding constraint on throughput, with
+      # KV cache idle at 13-20% and preemptions at zero.
+      #
+      #   $env:VLLM_MAX_NUM_SEQS=24
+      #   docker compose up -d --force-recreate vllm
+      #
+      # Kept as a variable rather than an edit so the before/after pair is
+      # reproducible from the command line rather than from memory.
+      - --max-num-seqs=${VLLM_MAX_NUM_SEQS:-8}
+      # Parameterised for the finalization throughput sweep. 2048 was chosen in
+      # Stage 1 because activation memory scales with this value and every MiB
+      # saved became KV cache on a 4 GiB card carrying 1.95 GiB of weights.
+      # The 1.5B model carries only 1.10 GiB, so that constraint is much looser
+      # and raising this is a real lever on prefill (and therefore TTFT, which
+      # Stage 9 identified as the binding term).
+      - --max-num-batched-tokens=${VLLM_MAX_NUM_BATCHED_TOKENS:-2048}
+      - --gpu-memory-utilization=0.78
+      - --enable-prefix-caching
+      - --swap-space=2
+      - --host=0.0.0.0
+      - --port=8000
+
+    # The Compose equivalent of `--gpus all`.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # python3, NOT python. This image is Ubuntu-based and has no `python`
+    # alias - visible in the container's own command, `python3 -m vllm...`.
+    # The first version of this healthcheck used `python` and failed silently
+    # every 15 s with "not found", so the container sat at health: starting
+    # forever and the gateway, which waits on service_healthy, never started.
+    #
+    # The general trap: a healthcheck that cannot run is indistinguishable from
+    # a service that is not ready, and during start_period it produces no
+    # visible error at all. Diagnose with:
+    #   docker inspect --format="{{json .State.Health}}" vllm
+    #
+    # start_period is generous because a cold start is genuinely slow: weight
+    # loading plus ~30-60 s of torch.compile when the compile cache is cold.
+    # During start_period, failures do not count against retries.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status==200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 420s
+
+  # ---------------------------------------------------------------------
+  # The product: auth, budgets, dashboard, chat UI.
+  # ---------------------------------------------------------------------
+  gateway:
+    build:
+      # Context is the project root because the image needs gateway/ AND ui/.
+      context: ../..
+      dockerfile: gateway/Dockerfile
+    container_name: gateway
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      # NOT localhost. Inside this container, localhost is the gateway itself.
+      # On a Compose network, service names are DNS names - which is exactly
+      # why this was an environment variable from Stage 3 rather than a
+      # hardcoded constant.
+      VLLM_BASE_URL: http://vllm:8000
+      GATEWAY_DB_PATH: /data/usage.db
+
+      # ---- Admission control (v2) --------------------------------------
+      # Every value here is a measurement, not a preference. See
+      # gateway/admission.py and docs/CAPACITY_MODEL.md for the derivations.
+
+      # Concurrent requests forwarded to the engine. Measured ceiling: p95 TTFT
+      # holds under 1.5 s with +24..33% margin at 6, and fails by 36% at 12.
+      GATEWAY_MAX_INFLIGHT: ${GATEWAY_MAX_INFLIGHT:-6}
+
+      # Waiting slots. Shallow on purpose: the service completes ~1.4 req/s at
+      # the concurrency limit, so each queue slot adds ~0.7 s to somebody's
+      # TTFT. This absorbs arrival jitter; it is not a backlog store.
+      GATEWAY_MAX_QUEUE: ${GATEWAY_MAX_QUEUE:-12}
+
+      # THE TERM THAT BOUNDS p95 TTFT UNDER OVERLOAD, and the one that has to
+      # be reconciled with the SLO rather than picked. Worst-case client TTFT
+      # is roughly this plus the engine's own TTFT. At 2.0 s, a queued request
+      # has already spent the entire 1.5 s budget before the engine starts, and
+      # a 30-user run measured p95 TTFT at 2,070 ms for exactly that reason.
+      # 0.6 s keeps the sum inside the SLO; the cost is a higher 503 rate,
+      # which is the correct trade - refusing work we cannot do well is the
+      # whole point of admission control.
+      GATEWAY_QUEUE_TIMEOUT_S: ${GATEWAY_QUEUE_TIMEOUT_S:-0.6}
+
+      # One key may hold at most half the pool, so a single abusive client
+      # cannot starve the rest. Worst case #2 tests this directly.
+      GATEWAY_MAX_INFLIGHT_PER_KEY: ${GATEWAY_MAX_INFLIGHT_PER_KEY:-3}
+
+      # A stream outliving this is abandoned and its slot released, so a client
+      # reading one byte per second cannot hold capacity indefinitely.
+      GATEWAY_STREAM_TIMEOUT_S: ${GATEWAY_STREAM_TIMEOUT_S:-300}
+
+    volumes:
+      # Usage and budgets survive `docker compose down` and rebuilds. Without
+      # this the database would live in the container's writable layer and
+      # every rebuild would silently reset every budget.
+      - gateway-data:/data
+
+    depends_on:
+      vllm:
+        # NOT just `depends_on: [vllm]`. That waits only for the container to
+        # start, and vLLM then spends 2-3 minutes loading weights and compiling.
+        # The gateway would come up, fail its first health check against a
+        # not-yet-listening engine, and report the stack unhealthy while nothing
+        # is actually wrong. service_healthy waits for the engine to answer.
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------
+  # Observability - defined now, activated in Stage 8.
+  #
+  # Behind a profile so `docker compose up` does not try to start services
+  # whose config files do not exist yet. Stage 8 writes the config and then
+  # starts them with:  docker compose --profile observability up -d
+  # ---------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: prometheus
+    profiles: [observability]
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../../observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: grafana
+    profiles: [observability]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../observability/grafana:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Anonymous admin access. Acceptable because this binds to localhost and
+      # PRODUCT_SPEC scopes out authentication; it would need a real login
+      # before facing a network.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    depends_on:
+      - prometheus
+
+volumes:
+  # EXTERNAL, and this matters. Compose normally prefixes volume names with the
+  # project name, so a plain `hf-cache:` here would create
+  # `inference-product_hf-cache` - a different, EMPTY volume - and vLLM would
+  # re-download the 2.7 GB model. `external: true` points at the existing
+  # top-level volume created by run_vllm.ps1.
+  #
+  # If it does not exist yet:  docker volume create hf-cache
+  hf-cache:
+    external: true
+
+  vllm-cache:
+  gateway-data:
+  prometheus-data:
+  grafana-data:

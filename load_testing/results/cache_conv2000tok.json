@@ -1,0 +1,293 @@
+{
+  "config": {
+    "users": 20,
+    "pattern": "steady",
+    "turns": 6,
+    "think_mean": 12.0,
+    "think_sigma": 0.6,
+    "conversation_mix": "2000",
+    "duration": 120.0,
+    "max_tokens": 192,
+    "seed": 42,
+    "slo_ttft_ms": 1500.0,
+    "abusive_concurrency": 0,
+    "label": "cache_conv2000tok"
+  },
+  "engine": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct-AWQ",
+    "max_model_len": 32768
+  },
+  "admission": {
+    "inflight": 0,
+    "waiting": 0,
+    "max_inflight": 6,
+    "max_queue": 12,
+    "max_inflight_per_key": 3,
+    "slots_used": 0,
+    "long_prompt_tokens": 2048,
+    "max_request_cost": 4,
+    "weighted_admissions": 84,
+    "active_keys": 0,
+    "current_share_per_key": 3,
+    "admitted_total": 963,
+    "rejected_total": {
+      "queue_timeout": 588,
+      "per_key_limit": 23
+    },
+    "peak_inflight": 6,
+    "peak_waiting": 8,
+    "mean_queue_wait_ms": 91.53
+  },
+  "totals": {
+    "turns_attempted": 113,
+    "turns_ok": 67,
+    "turns_shed_503": 45,
+    "turns_error": 1,
+    "shed_rate_pct": 39.82,
+    "output_tokens": 12864,
+    "output_tok_per_s": 107.6,
+    "mean_prompt_tokens": 738.2
+  },
+  "ttft_ms_all_requests": {
+    "p50": 349.5,
+    "p95": 809.3,
+    "p99": 1112.5,
+    "max": 1112.5
+  },
+  "ttft_ms_per_user_p95": {
+    "median_user": 505.2,
+    "worst_user": 1112.5,
+    "users_breaching_slo": 0,
+    "users_total": 20
+  },
+  "prefix_cache": {
+    "queries_delta": 49534.0,
+    "hits_delta": 36672.0,
+    "hit_rate_pct": 74.03,
+    "preemptions_delta": 0.0
+  },
+  "abusive": null,
+  "per_user": [
+    {
+      "user": 0,
+      "turns": 6,
+      "ok": 2,
+      "shed": 4,
+      "errors": 0,
+      "ttft_p50": 270.6,
+      "ttft_p95": 1112.5,
+      "ttft_max": 1112.5,
+      "mean_conversation_tokens": 1557
+    },
+    {
+      "user": 1,
+      "turns": 6,
+      "ok": 1,
+      "shed": 5,
+      "errors": 0,
+      "ttft_p50": 93.2,
+      "ttft_p95": 93.2,
+      "ttft_max": 93.2,
+      "mean_conversation_tokens": 81
+    },
+    {
+      "user": 2,
+      "turns": 5,
+      "ok": 3,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 303.0,
+      "ttft_p95": 357.2,
+      "ttft_max": 357.2,
+      "mean_conversation_tokens": 296.3
+    },
+    {
+      "user": 3,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 342.0,
+      "ttft_p95": 575.4,
+      "ttft_max": 575.4,
+      "mean_conversation_tokens": 403.5
+    },
+    {
+      "user": 4,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 449.3,
+      "ttft_p95": 449.9,
+      "ttft_max": 449.9,
+      "mean_conversation_tokens": 1660.7
+    },
+    {
+      "user": 5,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 238.7,
+      "ttft_p95": 808.0,
+      "ttft_max": 808.0,
+      "mean_conversation_tokens": 402
+    },
+    {
+      "user": 6,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 366.7,
+      "ttft_p95": 522.9,
+      "ttft_max": 522.9,
+      "mean_conversation_tokens": 401
+    },
+    {
+      "user": 7,
+      "turns": 6,
+      "ok": 4,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 365.2,
+      "ttft_p95": 519.3,
+      "ttft_max": 519.3,
+      "mean_conversation_tokens": 399.8
+    },
+    {
+      "user": 8,
+      "turns": 4,
+      "ok": 2,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 176.3,
+      "ttft_p95": 452.0,
+      "ttft_max": 452.0,
+      "mean_conversation_tokens": 188.5
+    },
+    {
+      "user": 9,
+      "turns": 6,
+      "ok": 5,
+      "shed": 1,
+      "errors": 0,
+      "ttft_p50": 150.2,
+      "ttft_p95": 405.6,
+      "ttft_max": 405.6,
+      "mean_conversation_tokens": 505.2
+    },
+    {
+      "user": 10,
+      "turns": 6,
+      "ok": 5,
+      "shed": 1,
+      "errors": 0,
+      "ttft_p50": 342.1,
+      "ttft_p95": 458.9,
+      "ttft_max": 458.9,
+      "mean_conversation_tokens": 507.6
+    },
+    {
+      "user": 11,
+      "turns": 6,
+      "ok": 5,
+      "shed": 1,
+      "errors": 0,
+      "ttft_p50": 289.4,
+      "ttft_p95": 520.7,
+      "ttft_max": 520.7,
+      "mean_conversation_tokens": 504.4
+    },
+    {
+      "user": 12,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 180.7,
+      "ttft_p95": 465.8,
+      "ttft_max": 465.8,
+      "mean_conversation_tokens": 293.7
+    },
+    {
+      "user": 13,
+      "turns": 6,
+      "ok": 5,
+      "shed": 1,
+      "errors": 0,
+      "ttft_p50": 685.4,
+      "ttft_p95": 1073.7,
+      "ttft_max": 1073.7,
+      "mean_conversation_tokens": 1874
+    },
+    {
+      "user": 14,
+      "turns": 5,
+      "ok": 3,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 124.8,
+      "ttft_p95": 784.9,
+      "ttft_max": 784.9,
+      "mean_conversation_tokens": 294
+    },
+    {
+      "user": 15,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 335.4,
+      "ttft_p95": 531.1,
+      "ttft_max": 531.1,
+      "mean_conversation_tokens": 295.7
+    },
+    {
+      "user": 16,
+      "turns": 5,
+      "ok": 3,
+      "shed": 2,
+      "errors": 0,
+      "ttft_p50": 745.7,
+      "ttft_p95": 809.3,
+      "ttft_max": 809.3,
+      "mean_conversation_tokens": 1663.3
+    },
+    {
+      "user": 17,
+      "turns": 6,
+      "ok": 3,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 340.6,
+      "ttft_p95": 466.6,
+      "ttft_max": 466.6,
+      "mean_conversation_tokens": 297.7
+    },
+    {
+      "user": 18,
+      "turns": 5,
+      "ok": 2,
+      "shed": 3,
+      "errors": 0,
+      "ttft_p50": 292.1,
+      "ttft_p95": 482.5,
+      "ttft_max": 482.5,
+      "mean_conversation_tokens": 1556
+    },
+    {
+      "user": 19,
+      "turns": 5,
+      "ok": 3,
+      "shed": 1,
+      "errors": 1,
+      "ttft_p50": 459.5,
+      "ttft_p95": 505.2,
+      "ttft_max": 505.2,
+      "mean_conversation_tokens": 1662.7
+    }
+  ],
+  "turns": []
+}

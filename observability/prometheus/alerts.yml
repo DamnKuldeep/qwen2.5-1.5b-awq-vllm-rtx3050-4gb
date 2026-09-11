@@ -1,0 +1,183 @@
+# Alert rules — v2.
+#
+# THE SELECTION CRITERION: alert on what PREDICTS failure, not what reports it.
+#
+# "p95 TTFT breached the SLO" is a report. By the time it fires, users have
+# already had a bad experience and the only available action is apologising.
+# The rules below fire on the conditions that CAUSE that, while there is still
+# a decision to make - shed load, shorten conversations, cool the card.
+#
+# Each rule names the measurement it came from. A rule whose threshold nobody
+# can justify is a rule that gets silenced during the first incident.
+
+groups:
+
+  - name: capacity
+    interval: 15s
+    rules:
+
+      # PREDICTIVE. The prefix cache is one shared pool of ~69,760 tokens. When
+      # the working set of active conversations stops fitting, hit rate
+      # collapses and every turn re-prefills its whole history - measured at
+      # roughly 9x the cost of a hit. Hit rate falls BEFORE latency rises,
+      # because the extra prefill work is absorbed by spare capacity first.
+      # This is the single most valuable signal in the system.
+      - alert: PrefixCacheHitRateCollapsing
+        expr: |
+          (rate(vllm:prefix_cache_hits_total[2m])
+           / clamp_min(rate(vllm:prefix_cache_queries_total[2m]), 1)) < 0.35
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Prefix cache hit rate below 35% ({{ $value | humanizePercentage }})"
+          description: >
+            The active conversation working set no longer fits the shared KV
+            cache, so turns are re-prefilling history. Capacity is falling even
+            if latency still looks acceptable. Shorten conversations (context
+            policy) or reduce admitted users.
+
+      # PREDICTIVE. KV cache filling is the precursor to preemption. At the
+      # measured workload this sits at 8-17%, so 85% means something has
+      # changed qualitatively - much longer conversations, or a concurrency
+      # limit raised without re-deriving it.
+      # NOTE THE METRIC NAME. It is `kv_cache_usage_perc`, not
+      # `gpu_cache_usage_perc` - the latter was guessed once in this project and
+      # produced a panel that silently showed nothing. Read names from
+      # /metrics; do not infer them.
+      - alert: KVCacheNearlyFull
+        expr: vllm:kv_cache_usage_perc > 0.85
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "GPU KV cache above 85% ({{ $value | humanizePercentage }})"
+          description: >
+            Preemption becomes likely above this. Normal operation for this
+            deployment is 8-17%.
+
+      # CONFIRMS the above became real. Preemption means the engine evicted a
+      # running sequence and will recompute it - throughput is now being spent
+      # twice on the same tokens.
+      - alert: EnginePreempting
+        expr: increase(vllm:num_preemptions_total[5m]) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Engine preempted {{ $value }} sequences in 5m"
+
+  - name: admission
+    interval: 15s
+    rules:
+
+      # PREDICTIVE. Queue depth rises before TTFT does, because a request has
+      # to wait before it can be slow. Sustained non-zero depth means arrivals
+      # exceed service rate.
+      - alert: AdmissionQueueBackingUp
+        expr: avg_over_time(gateway_queue_depth[2m]) > 3
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Admission queue averaging {{ $value }} waiting requests"
+          description: >
+            Offered load is at or above capacity. Shedding is imminent or
+            already happening. This is the signal to scale, not the 503 rate.
+
+      # Shedding is DESIGNED behaviour, so a low rate is healthy and should not
+      # page anyone. A sustained high rate means the service is persistently
+      # undersized rather than absorbing a burst.
+      - alert: SustainedLoadShedding
+        expr: |
+          rate(gateway_rejected_total[5m])
+          / clamp_min(rate(gateway_admitted_total[5m]) + rate(gateway_rejected_total[5m]), 0.001)
+          > 0.2
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Shedding {{ $value | humanizePercentage }} of requests for 5 minutes"
+          description: >
+            Brief shedding under burst is correct behaviour. Five minutes of it
+            means capacity is genuinely insufficient for offered load.
+
+      # The SLO itself. Deliberately last, and labelled as a report rather than
+      # a prediction - if this is the first thing that fires, the predictive
+      # rules above were mis-tuned.
+      - alert: TTFTServiceLevelBreached
+        expr: |
+          histogram_quantile(0.95, sum(rate(gateway_ttft_seconds_bucket[5m])) by (le)) > 1.5
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "p95 TTFT {{ $value }}s exceeds the 1.5s objective"
+          description: >
+            Client-observed, so it includes queue time. Note the SLO is defined
+            for chat-length prompts (~500 tokens); a workload of very long
+            prompts will breach it legitimately.
+
+      # Accounting integrity. Non-zero means GPU work is being served that
+      # cannot be billed - the failure mode that quietly gives away capacity.
+      - alert: BillingWritesFailing
+        expr: increase(gateway_billing_write_errors_total[5m]) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value }} ledger writes failed in 5m"
+
+  - name: platform
+    interval: 15s
+    rules:
+
+      # The engine being unreachable. The gateway stays UP and returns honest
+      # 502s (liveness vs readiness, learned in Stage 10c), so this has to be
+      # alerted explicitly - nothing else will crash to tell you.
+      - alert: InferenceEngineDown
+        expr: up{job="vllm"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "vLLM is not scrapeable"
+
+      - alert: UpstreamErrorsRising
+        expr: increase(gateway_upstream_errors_total[5m]) > 3
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} upstream failures in 5m"
+
+# ---------------------------------------------------------------------------
+# THERMAL THROTTLING (worst case #13) IS NOT ALERTABLE HERE, AND THAT IS
+# RECORDED RATHER THAN PAPERED OVER.
+#
+# It is the single most consequential failure this project ever hit: a host
+# power setting cost 11.6x throughput, silently, with no error in any engine
+# log. Finalization Phase 2 then measured a further 42% swing between two runs
+# of an identical command from thermal state alone.
+#
+# Neither is visible in vLLM's metrics, because they are hardware facts. Seeing
+# them needs GPU telemetry, which on Linux means dcgm-exporter - and dcgm
+# expects driver access patterns that WSL2 under WDDM does not reliably
+# provide. Rather than ship a rule that silently never fires, the split is
+# stated: Prometheus covers engine and gateway state, benchmarks/watch_gpu.ps1
+# covers hardware state, and every recorded measurement carries the idle
+# temperature it started from.
+#
+# The proxy rule below is the best available substitute: sustained throughput
+# well below the measured floor, with the queue empty and the cache healthy,
+# means the hardware slowed down rather than the software.
+# ---------------------------------------------------------------------------
+
+  - name: thermal-proxy
+    interval: 30s
+    rules:
+      - alert: ThroughputBelowThermalFloor
+        expr: |
+          rate(vllm:generation_tokens_total[5m]) > 0
+          and rate(vllm:generation_tokens_total[5m]) < 120
+          and avg_over_time(gateway_inflight[5m]) > 3
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Generation throughput {{ $value }} tok/s with 3+ requests in flight"
+          description: >
+            Below the measured floor for this model at this concurrency
+            (~295 tok/s at 6 in flight, worst observed ~188). With the queue
+            busy and the cache healthy, suspect GPU clocks. Check
+            benchmarks/watch_gpu.ps1 for pstate and clocks_event_reasons.

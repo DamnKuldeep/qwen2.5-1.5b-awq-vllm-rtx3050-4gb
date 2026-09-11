@@ -1,0 +1,29 @@
+# Gateway dependencies. Pinned exactly, for the same reason the vLLM image and
+# model revision are pinned (Boundary 2): a floating version means the thing we
+# measured is not the thing we ship.
+#
+# Install:  pip install -r gateway/requirements.txt
+
+# ASGI web framework. Async-native, which is the point — this gateway's job is
+# almost entirely waiting on vLLM, and blocking a worker thread per request
+# would cap concurrency at the size of the thread pool.
+fastapi==0.115.6
+
+# ASGI server that actually runs the app. The [standard] extra pulls in
+# uvloop/httptools where available for faster event loop and HTTP parsing.
+uvicorn[standard]==0.34.0
+
+# Async HTTP client. Chosen over `requests` because requests is synchronous:
+# a single call would block the event loop and serialise every concurrent
+# request through the gateway, destroying the concurrency FastAPI provides.
+httpx==0.28.1
+
+# Templating engine for the server-rendered product dashboard (Stage 4).
+# Chosen over a JS frontend to keep v1 minimal, and to keep the product
+# dashboard visibly a different kind of thing from Grafana. See DECISIONS.md.
+jinja2==3.1.5
+
+# NOTE: no database driver. SQLite ships in the Python standard library
+# (`sqlite3`), which is a large part of why DECISIONS.md picked it — zero extra
+# infrastructure to install, run, or containerise in Stage 7.
+

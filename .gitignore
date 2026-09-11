@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# The usage ledger. Contains API keys and per-key budgets - some minted for
+# real people. Never publish. Covered by *.db, plus SQLite's WAL/shm sidecars
+# and the .bak the failure-matrix harness writes.
+*.db
+*.db-wal
+*.db-shm
+*.db.bak
+
+# Secrets and local config
+.env
+.env.*
+
+# Console captures from measurement runs. The JSON result files alongside them
+# are the evidence and are committed; these are the same numbers as terminal
+# scrollback.
+*.log
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Agent working notes - the briefs that drove this project, not part of it
+Claude outputs/
+
+# JS
+node_modules/

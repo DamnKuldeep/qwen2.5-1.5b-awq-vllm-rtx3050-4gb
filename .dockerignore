@@ -1,0 +1,31 @@
+# Everything here is excluded from the Docker build context.
+#
+# This matters for more than image size: the build context is uploaded to the
+# Docker daemon before the build starts, so a .venv directory means hundreds of
+# megabytes copied across on every single build.
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# The local development database must never be baked into an image. It contains
+# the demo API keys and their usage, and a container should start from the
+# volume it is given, not from a snapshot of someone's laptop.
+gateway/usage.db
+gateway/usage.db-wal
+gateway/usage.db-shm
+*.db
+
+# Test files - the image does not install pytest and will never run these.
+gateway/tests/
+
+.git/
+.gitignore
+*.md
+docs/
+benchmarks/
+load_testing/
+observability/
+deployment/k8s/

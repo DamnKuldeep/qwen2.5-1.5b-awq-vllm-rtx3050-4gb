@@ -1,0 +1,58 @@
+[
+  {
+    "case": "1. Burst 10x over admission limit (60 simultaneous)",
+    "expected": "p95 TTFT bounded; excess refused with 503 + Retry-After, not queued",
+    "measured": "6 served, 54 shed (Retry-After: 2); served p95 TTFT 398.9 ms",
+    "verdict": "PASS",
+    "detail": "admission limit is 6 in flight, so this is 10x offered load"
+  },
+  {
+    "case": "3. Single ~26k-token prompt alongside normal traffic",
+    "expected": "short requests keep flowing; their TTFT rises but stays in low seconds",
+    "measured": "big prompt 20448 tok, TTFT 19666.2 ms; small requests p95 TTFT 99.1 ms alone -> 19357.6 ms during; 0 shed",
+    "verdict": "FINDING",
+    "detail": "8/8 concurrent short requests completed"
+  },
+  {
+    "case": "4. Conversation outgrows the context window",
+    "expected": "200 with oldest turns dropped and reported; never a hard 400 (window 32,768)",
+    "measured": "HTTP 200, X-Context-Trimmed-Messages=27, prompt sent ~95,488 tok -> engine saw 9726 tok",
+    "verdict": "PASS",
+    "detail": "system message and the current question are preserved by policy"
+  },
+  {
+    "case": "7. Client disconnects mid-stream",
+    "expected": "slot released within seconds, in-flight returns to 0, usage still recorded",
+    "measured": "in-flight 0 -> 0 after abandoning the stream at chunk 3; admitted_total 1480",
+    "verdict": "PASS",
+    "detail": "accounting is written from the generator's finally block"
+  },
+  {
+    "case": "8. Slow client reading ~1 chunk/second",
+    "expected": "holds at most one slot; other users unaffected; bounded by stream timeout",
+    "measured": "5/5 concurrent normal requests succeeded while the slow reader ran; their TTFT p50 98.1 ms; in-flight during test 0",
+    "verdict": "PASS",
+    "detail": "stream timeout caps a stuck stream; per-key limit caps how many one client can hold"
+  },
+  {
+    "case": "11. Budget exhausted mid-conversation",
+    "expected": "clean 429 with budget headers; conversation resumable on a funded key",
+    "measured": "429 after 0 served requests; X-Budget-Remaining=0; same conversation on a funded key -> HTTP 200",
+    "verdict": "PASS",
+    "detail": "429 costs ~8 ms against ~5,000 ms to serve - refusing is ~600x cheaper"
+  },
+  {
+    "case": "12. Billing ledger unwritable (disk full / permissions)",
+    "expected": "bounded unbilled requests, then 503 (fail CLOSED), then automatic recovery",
+    "measured": "[200, 200, 200, 503, 503, 503] while unwritable -> 3 served unbilled before the breaker tripped; HTTP 503 during cooldown; HTTP 200 after cooldown",
+    "verdict": "PASS",
+    "detail": "WAL mode means readers are never blocked by a writer, so the budget CHECK keeps succeeding - only a run of failed WRITES reveals the outage"
+  },
+  {
+    "case": "10. KV pressure / preemption with exact accounting",
+    "expected": "every served request bills exactly 700 completion tokens; zero drift",
+    "measured": "2 served, 10 shed; ledger +12 rows, +1400 completion tokens (expected 1400); engine preemptions +0",
+    "verdict": "PASS",
+    "detail": "ignore_eos makes output length deterministic, so any drift is real drift"
+  }
+]

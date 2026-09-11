@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<!--
+  Chat UI - Stage 6, substantially reworked in v2.
+
+  Plain HTML/CSS/JS. No framework, no build step, no dependencies. The whole
+  page is one file you can read top to bottom.
+
+  SERVED BY THE GATEWAY AT /chat, NOT OPENED AS A FILE.
+  A page opened as file:// has origin "null"; its fetch to http://localhost:8080
+  is blocked by the browser's same-origin policy (CORS) even though the request
+  itself would succeed. Serving the page from the gateway makes it same-origin,
+  so CORS never applies and we never have to loosen it on an authenticated API.
+
+  THREE PROBLEMS v1 HAD, ALL FIXED HERE
+  --------------------------------------
+  1. ANSWERS WERE CUT OFF MID-SENTENCE. max_tokens was pinned at 512 and
+     nothing checked finish_reason, so a longer answer simply stopped, with no
+     indication that it had been truncated rather than finished. Now the cap is
+     higher AND finish_reason=="length" triggers an automatic continuation, up
+     to a bounded number of rounds, with a visible note if the bound is hit.
+
+  2. MARKDOWN RENDERED AS LITERAL ASTERISKS. The reply went into textContent,
+     so a model that answers with headings, bold text, lists and fenced code
+     produced a wall of punctuation. There is a small renderer below - written
+     out rather than pulled from a CDN, because the page is served from an
+     authenticated same-origin gateway and adding a third-party script tag to
+     it would undo that property for a formatting convenience.
+
+  3. CONTEXT OVERFLOW WAS A DEAD END. The full history is resent every turn, so
+     a long enough conversation eventually exceeded the window and returned a
+     400 with no way forward. The gateway now trims oldest turns and reports it
+     in X-Context-Trimmed-Messages, which this page surfaces instead of hiding.
+
+  The footer shows TTFT, tokens/sec, context size and remaining budget live -
+  the same metrics the benchmarks measure, here as something you can feel.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat - Inference Gateway</title>
+<style>
+  :root {
+    --bg:#f7f7f5; --card:#fff; --ink:#1a1a18; --muted:#6b6b66; --line:#e3e3df;
+    --accent:#2f6f4f; --user:#eef3f0; --danger:#a33a3a; --warn:#8a6d1f;
+    --code-bg:#f2f2ee; --code-ink:#1a1a18;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#16161a; --card:#1e1e24; --ink:#ececf0; --muted:#9a9aa4; --line:#2e2e38;
+      --accent:#6fbf95; --user:#23292b; --danger:#e07a7a; --warn:#d9b45a;
+      --code-bg:#15151b; --code-ink:#e6e6ec;
+    }
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink); height:100vh;
+    display:flex; flex-direction:column;
+    font:15px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    border-bottom:1px solid var(--line); padding:12px 20px; background:var(--card);
+    display:flex; gap:14px; align-items:center; flex-wrap:wrap;
+  }
+  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:-0.01em; }
+  header .spacer { flex:1; }
+  input[type=password] {
+    background:var(--bg); color:var(--ink); border:1px solid var(--line);
+    border-radius:7px; padding:6px 10px; font:inherit; font-size:13px; min-width:200px;
+  }
+  button {
+    background:var(--accent); color:#fff; border:0; border-radius:7px;
+    padding:8px 16px; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
+  button.tiny { padding:3px 9px; font-size:12px; font-weight:500; }
+
+  main { flex:1; overflow-y:auto; padding:22px 20px; }
+  .thread { max-width:820px; margin:0 auto; display:flex; flex-direction:column; gap:16px; }
+  .msg { display:flex; flex-direction:column; gap:5px; }
+  .who { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .bubble {
+    background:var(--card); border:1px solid var(--line); border-radius:11px;
+    padding:12px 15px; word-wrap:break-word; overflow-wrap:anywhere;
+  }
+  /* The user's own text is not markdown - preserve their newlines verbatim. */
+  .msg.user .bubble { background:var(--user); white-space:pre-wrap; }
+  .msg.error .bubble { border-color:var(--danger); color:var(--danger); white-space:pre-wrap; }
+  .msg.notice .bubble { border-color:var(--warn); color:var(--warn); background:transparent; font-size:13px; }
+  .meta { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+
+  /* ---- rendered markdown ------------------------------------------------ */
+  .md > *:first-child { margin-top:0; }
+  .md > *:last-child { margin-bottom:0; }
+  .md h1, .md h2, .md h3, .md h4 { margin:1.2em 0 .5em; line-height:1.3; font-weight:650; }
+  .md h1 { font-size:1.35em; } .md h2 { font-size:1.2em; }
+  .md h3 { font-size:1.08em; } .md h4 { font-size:1em; }
+  .md p { margin:.65em 0; }
+  .md ul, .md ol { margin:.6em 0; padding-left:1.5em; }
+  .md li { margin:.25em 0; }
+  .md blockquote {
+    margin:.7em 0; padding:.1em 0 .1em .9em;
+    border-left:3px solid var(--line); color:var(--muted);
+  }
+  .md hr { border:0; border-top:1px solid var(--line); margin:1.2em 0; }
+  .md a { color:var(--accent); }
+  .md code {
+    font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background:var(--code-bg); padding:1px 5px; border-radius:4px;
+  }
+  .md pre {
+    background:var(--code-bg); color:var(--code-ink); border:1px solid var(--line);
+    border-radius:8px; padding:11px 13px; overflow-x:auto; margin:.8em 0;
+  }
+  .md pre code { background:none; padding:0; font-size:12.5px; }
+  .md table { border-collapse:collapse; margin:.8em 0; display:block; overflow-x:auto; }
+  .md th, .md td { border:1px solid var(--line); padding:5px 10px; text-align:left; }
+  .md th { background:var(--code-bg); font-weight:650; }
+  .md strong { font-weight:650; }
+
+  .cursor::after {
+    content:"\25CF"; margin-left:3px; font-size:9px; vertical-align:middle;
+    animation:blink 1s steps(2,start) infinite; color:var(--muted);
+  }
+  @keyframes blink { to { visibility:hidden; } }
+
+  footer { border-top:1px solid var(--line); background:var(--card); padding:14px 20px; }
+  .composer { max-width:820px; margin:0 auto; display:flex; gap:10px; align-items:flex-end; }
+  textarea {
+    flex:1; resize:none; background:var(--bg); color:var(--ink); font:inherit;
+    border:1px solid var(--line); border-radius:9px; padding:10px 13px;
+    min-height:46px; max-height:180px;
+  }
+  .stats {
+    max-width:820px; margin:9px auto 0; display:flex; gap:18px; flex-wrap:wrap;
+    font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums;
+  }
+  .stats b { color:var(--ink); font-weight:600; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Chat</h1>
+  <span id="model" class="meta" style="font-family:ui-monospace,monospace;">&mdash;</span>
+  <input id="key" type="password" placeholder="API key (e.g. dev-key-alpha)" autocomplete="off">
+  <button class="ghost" id="clear" type="button">New conversation</button>
+  <span class="spacer"></span>
+  <a href="/dashboard" style="color:var(--muted); font-size:12px;">Usage dashboard &rarr;</a>
+</header>
+
+<main><div class="thread" id="thread"></div></main>
+
+<footer>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Message... (Enter to send, Shift+Enter for newline)"></textarea>
+    <button id="send" type="button">Send</button>
+  </div>
+  <div class="stats">
+    <span>TTFT <b id="s-ttft">-</b></span>
+    <span>Speed <b id="s-tps">-</b></span>
+    <span>Last reply <b id="s-out">-</b></span>
+    <span>Context <b id="s-ctx">-</b></span>
+    <span>Window <b id="s-win">-</b></span>
+    <span>Queue wait <b id="s-queue">-</b></span>
+    <span>Budget left <b id="s-budget">-</b></span>
+  </div>
+</footer>
+
+<script>
+// The model name is ASKED FOR, not hardcoded.
+//
+// It used to be a constant, and that broke the moment Stage 11 swapped the
+// engine to a different model: every request failed with "The model
+// Qwen/Qwen2.5-3B-Instruct-AWQ does not exist". A client that hardcodes what
+// the server is serving is a client that breaks on every deployment change -
+// and the gateway already proxies /v1/models precisely so it does not have to.
+let MODEL = "";
+let MAX_MODEL_LEN = 0;
+
+// Reply cap per request. v1 used 512 and that is the direct cause of answers
+// stopping mid-sentence: a model asked to explain something in depth needs
+// more, and nothing told the user it had been cut short. 1536 covers almost
+// every conversational answer; anything longer is handled by continuation
+// below rather than by making this arbitrarily large, because max_tokens is
+// reserved out of the context window whether it is used or not.
+const MAX_TOKENS = 1536;
+
+// Bounded automatic continuation. Unbounded would let one prompt spend the
+// whole budget; zero would put the truncation back in the user's face.
+const MAX_CONTINUATIONS = 3;
+
+const $ = id => document.getElementById(id);
+const keyInput = $("key"), input = $("input"), sendBtn = $("send"), thread = $("thread");
+
+// ---------------------------------------------------------------------------
+// A small, deliberately conservative markdown renderer.
+//
+// SECURITY: every character of model output is HTML-escaped BEFORE any markup
+// is introduced, and the only tags that exist afterwards are ones this function
+// created itself. The model cannot emit HTML that reaches the DOM, because by
+// the time we insert tags its angle brackets are already entities. Link hrefs
+// are additionally restricted to http/https/mailto so a generated
+// `javascript:` URL cannot become a clickable script.
+// ---------------------------------------------------------------------------
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => (
+    { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]
+  ));
+}
+
+function safeHref(url) {
+  const trimmed = url.trim();
+  return /^(https?:|mailto:)/i.test(trimmed) ? trimmed : "#";
+}
+
+function renderInline(text) {
+  let out = escapeHtml(text);
+  // Inline code first: its contents must not be re-processed for emphasis,
+  // so it is swapped for a placeholder and restored at the end.
+  const codes = [];
+  out = out.replace(/`([^`]+)`/g, (_, code) => {
+    codes.push(code);
+    return " CODE" + (codes.length - 1) + " ";
+  });
+  out = out
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,
+      (_, label, url) => `<a href="${escapeHtml(safeHref(url))}" target="_blank" rel="noopener noreferrer">${label}</a>`)
+    .replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  return out.replace(/ CODE(\d+) /g, (_, i) => `<code>${codes[i]}</code>`);
+}
+
+function renderMarkdown(src) {
+  // Fenced code blocks are lifted out before anything else, so their contents
+  // are never treated as markdown. An unterminated fence (which happens
+  // constantly while streaming) is closed implicitly at the end of input, so a
+  // half-written code block still renders as a code block rather than as
+  // stray backticks followed by unformatted text.
+  const blocks = [];
+  let text = src.replace(/```([^\n`]*)\n?([\s\S]*?)(?:```|$)/g, (_, lang, code) => {
+    blocks.push({ lang: lang.trim(), code });
+    return "\n BLOCK" + (blocks.length - 1) + " \n";
+  });
+
+  const lines = text.split("\n");
+  const html = [];
+  let listType = null, para = [];
+
+  const flushPara = () => {
+    if (para.length) { html.push("<p>" + renderInline(para.join("\n")).replace(/\n/g, "<br>") + "</p>"); para = []; }
+  };
+  const closeList = () => { if (listType) { html.push(`</${listType}>`); listType = null; } };
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    const placeholder = line.match(/^ BLOCK(\d+) $/);
+    if (placeholder) {
+      flushPara(); closeList();
+      const b = blocks[placeholder[1]];
+      const label = b.lang ? ` data-lang="${escapeHtml(b.lang)}"` : "";
+      html.push(`<pre${label}><code>${escapeHtml(b.code.replace(/\n$/, ""))}</code></pre>`);
+      continue;
+    }
+    if (!line.trim()) { flushPara(); closeList(); continue; }
+
+    let m;
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+      flushPara(); closeList();
+      html.push(`<h${m[1].length}>${renderInline(m[2])}</h${m[1].length}>`);
+    } else if (/^\s*(---|\*\*\*|___)\s*$/.test(line)) {
+      flushPara(); closeList(); html.push("<hr>");
+    } else if ((m = line.match(/^\s*>\s?(.*)$/))) {
+      flushPara(); closeList();
+      html.push(`<blockquote>${renderInline(m[1])}</blockquote>`);
+    } else if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
+      flushPara();
+      if (listType !== "ul") { closeList(); html.push("<ul>"); listType = "ul"; }
+      html.push(`<li>${renderInline(m[1])}</li>`);
+    } else if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+      flushPara();
+      if (listType !== "ol") { closeList(); html.push("<ol>"); listType = "ol"; }
+      html.push(`<li>${renderInline(m[1])}</li>`);
+    } else {
+      closeList();
+      para.push(line);
+    }
+  }
+  flushPara(); closeList();
+  return html.join("");
+}
+
+// ---------------------------------------------------------------------------
+
+async function loadModel() {
+  const key = keyInput.value.trim();
+  if (!key) return;
+  try {
+    const res = await fetch("/v1/models", { headers: { "Authorization": "Bearer " + key } });
+    if (!res.ok) return;
+    const body = await res.json();
+    const entry = body?.data?.[0];
+    if (entry?.id) {
+      MODEL = entry.id;
+      $("model").textContent = entry.id.split("/").pop();
+      $("model").title = entry.id;
+    }
+    if (entry?.max_model_len) {
+      MAX_MODEL_LEN = entry.max_model_len;
+      $("s-win").textContent = MAX_MODEL_LEN.toLocaleString() + " tok";
+    }
+  } catch { /* leave it blank; the request would have failed anyway */ }
+}
+
+// The API key lives in localStorage. Acceptable for v1 because PRODUCT_SPEC
+// scopes out a real auth provider and this binds to localhost - but note that
+// any script on this origin could read it. A production system would use a
+// session cookie and keep the provider key server-side.
+keyInput.value = localStorage.getItem("gw_key") || "";
+keyInput.addEventListener("change", () => {
+  localStorage.setItem("gw_key", keyInput.value.trim());
+  loadModel();
+});
+loadModel();
+
+// The full conversation is resent on every request. That is how a stateless
+// chat API works - the server holds no session - and it is why the "Context"
+// counter grows every turn. The gateway trims the oldest turns when the total
+// would exceed the window, and says so in a response header.
+let messages = [];
+let busy = false;
+
+function addMessage(role, text = "") {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const who = document.createElement("div");
+  who.className = "who";
+  who.textContent = role === "user" ? "You"
+    : role === "error" ? "Error"
+    : role === "notice" ? "Note" : "Assistant";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble" + (role === "assistant" ? " md" : "");
+  if (role === "assistant") bubble.innerHTML = ""; else bubble.textContent = text;
+  wrap.append(who, bubble);
+  thread.append(wrap);
+  scrollDown();
+  return bubble;
+}
+
+function scrollDown() {
+  const main = document.querySelector("main");
+  // Only auto-scroll when the user is already near the bottom, so reading
+  // back through a long answer is not yanked away on every token.
+  if (main.scrollHeight - main.scrollTop - main.clientHeight < 160) {
+    main.scrollTop = main.scrollHeight;
+  }
+}
+
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 180) + "px";
+});
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+sendBtn.addEventListener("click", send);
+$("clear").addEventListener("click", () => {
+  messages = []; thread.innerHTML = "";
+  $("s-ctx").textContent = "-";
+});
+
+/**
+ * One streamed round trip. Returns what happened, so the caller can decide
+ * whether to continue: {text, finish, usage, ttftMs}.
+ */
+async function streamOnce(apiKey, onDelta) {
+  const t0 = performance.now();
+  let firstTokenAt = null, text = "", finish = null, usage = null;
+
+  const res = await fetch("/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: messages,
+      stream: true,
+      max_tokens: MAX_TOKENS
+      // No temperature set: the server applies Qwen's recommended defaults
+      // (temperature 0.7, top_p 0.8, top_k 20), which are the right choice
+      // for conversation. The benchmark harness overrides them to 0 for
+      // determinism; a chat UI should not.
+    })
+  });
+
+  const remaining = res.headers.get("X-Budget-Remaining");
+  if (remaining !== null) $("s-budget").textContent = Number(remaining).toLocaleString();
+  const qwait = res.headers.get("X-Queue-Wait-Ms");
+  if (qwait !== null) $("s-queue").textContent = qwait + " ms";
+  const trimmed = res.headers.get("X-Context-Trimmed-Messages");
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body?.error?.message || ("HTTP " + res.status));
+    err.status = res.status;
+    err.retryAfter = res.headers.get("Retry-After");
+    throw err;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let i;
+    while ((i = buf.indexOf("\n\n")) !== -1) {
+      const event = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+
+      for (const line of event.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const raw = line.slice(5).trim();
+        if (!raw || raw === "[DONE]") continue;
+
+        let obj;
+        try { obj = JSON.parse(raw); } catch { continue; }
+
+        const choice = obj.choices?.[0];
+        const delta = choice?.delta?.content;
+        if (delta) {
+          if (firstTokenAt === null) {
+            firstTokenAt = performance.now();
+            $("s-ttft").textContent = Math.round(firstTokenAt - t0) + " ms";
+          }
+          text += delta;
+          onDelta(text);
+        }
+        // finish_reason "length" means the model was CUT OFF at max_tokens,
+        // not that it finished. v1 never read this field, which is exactly
+        // why answers appeared to stop mid-sentence for no reason.
+        if (choice?.finish_reason) finish = choice.finish_reason;
+
+        // The final chunk carries real token counts, because the gateway
+        // injects stream_options.include_usage (Stage 4). Without that
+        // injection this would never arrive and the counters below would
+        // have to be guessed from chunk counts.
+        if (obj.usage) {
+          usage = obj.usage;
+          $("s-out").textContent = obj.usage.completion_tokens.toLocaleString() + " tok";
+          const pct = MAX_MODEL_LEN ? ` (${Math.round(100 * obj.usage.prompt_tokens / MAX_MODEL_LEN)}%)` : "";
+          $("s-ctx").textContent = obj.usage.prompt_tokens.toLocaleString() + " tok" + pct;
+          const secs = (performance.now() - (firstTokenAt ?? t0)) / 1000;
+          if (secs > 0) $("s-tps").textContent = (obj.usage.completion_tokens / secs).toFixed(1) + " tok/s";
+        }
+      }
+    }
+  }
+  return { text, finish, usage, trimmed };
+}
+
+async function send() {
+  const text = input.value.trim();
+  const apiKey = keyInput.value.trim();
+  if (!text || busy) return;
+  if (!apiKey) { addMessage("error", "Enter an API key first."); return; }
+  if (!MODEL) { await loadModel(); }
+  if (!MODEL) { addMessage("error", "Could not resolve the served model from /v1/models."); return; }
+
+  busy = true; sendBtn.disabled = true;
+  input.value = ""; input.style.height = "auto";
+
+  addMessage("user", text);
+  messages.push({ role: "user", content: text });
+  // Everything this turn appends lives at or after this index. Recording it
+  // now makes both the continuation-collapse and the error rollback below
+  // exact, rather than having to search the history for what to remove.
+  const turnStart = messages.length;
+
+  const bubble = addMessage("assistant");
+  bubble.classList.add("cursor");
+
+  // Re-rendering markdown on every token would reparse the whole reply
+  // thousands of times. Throttling to ~12 fps keeps it visually smooth while
+  // keeping the parse cost negligible.
+  let pending = null, lastRender = 0;
+  const paint = (full) => {
+    pending = full;
+    const now = performance.now();
+    if (now - lastRender < 80) return;
+    lastRender = now;
+    bubble.innerHTML = renderMarkdown(pending);
+    scrollDown();
+  };
+
+  let full = "";
+  let rounds = 0;
+  let trimmedNote = null;
+
+  try {
+    while (true) {
+      const prefix = full;
+      const r = await streamOnce(apiKey, t => paint(prefix + t));
+      full += r.text;
+      if (r.trimmed) trimmedNote = r.trimmed;
+
+      // Record the turn so a continuation request carries it as context.
+      if (r.text) messages.push({ role: "assistant", content: r.text });
+
+      if (r.finish !== "length" || rounds >= MAX_CONTINUATIONS) {
+        if (r.finish === "length") {
+          addMessage("notice",
+            `Answer stopped after ${MAX_CONTINUATIONS} continuations (${MAX_TOKENS * (rounds + 1)} tokens). ` +
+            `Ask a follow-up to keep going.`);
+        }
+        break;
+      }
+      // Continue from exactly where it stopped. Collapsing the two halves into
+      // one assistant turn afterwards keeps the history clean for later turns.
+      rounds++;
+      messages.push({ role: "user", content: "Continue exactly where you stopped. Do not repeat anything." });
+    }
+
+    // Collapse the continuation rounds into a single assistant message.
+    //
+    // Without this the history would contain the synthetic "Continue exactly
+    // where you stopped" turns, which would then be resent on every later
+    // request - wasting context, confusing the model about what the user
+    // actually said, and changing the prompt prefix in a way that costs a
+    // prefix-cache hit on the very next turn.
+    if (rounds > 0) {
+      messages.length = turnStart;
+      messages.push({ role: "assistant", content: full });
+    }
+
+    bubble.innerHTML = renderMarkdown(full) || "<p><em>(empty response)</em></p>";
+    if (trimmedNote) {
+      addMessage("notice",
+        `This conversation exceeded the ${MAX_MODEL_LEN.toLocaleString()}-token context window, ` +
+        `so the gateway dropped the ${trimmedNote} oldest message(s) to make it fit. ` +
+        `Earlier turns are no longer visible to the model.`);
+    }
+  } catch (err) {
+    bubble.parentElement.className = "msg error";
+    if (err.status === 503) {
+      bubble.textContent =
+        "Server is at capacity and shed this request (HTTP 503)" +
+        (err.retryAfter ? `. Retry after ${err.retryAfter}s.` : ".") +
+        "\n\n" + err.message +
+        "\n\nThis is admission control working as designed: the service refuses " +
+        "work it cannot do within its latency target rather than queueing it.";
+    } else if (err.status === 429) {
+      bubble.previousElementSibling.textContent = "Budget exhausted";
+      bubble.textContent = err.message;
+    } else {
+      bubble.textContent = "Request failed: " + err.message +
+        "\n\nIs the gateway running, and vLLM behind it?";
+    }
+    // Roll the history back to before this turn, so a retry does not resend a
+    // conversation containing a failed exchange.
+    messages.length = turnStart - 1;
+  } finally {
+    bubble.classList.remove("cursor");
+    busy = false; sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+input.focus();
+</script>
+</body>
+</html>
