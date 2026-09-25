@@ -159,6 +159,17 @@ class Admission:
     def waiting(self) -> int:
         return self._waiting
 
+    @property
+    def slots_used(self) -> int:
+        """Weighted slots currently held.
+
+        Distinct from `inflight`, which counts REQUESTS. A single long prompt
+        can hold four slots while being one request, so these two gauges
+        diverge exactly when head-of-line blocking is the thing you are
+        looking for - which is why both are exported.
+        """
+        return self._used
+
     def snapshot(self) -> dict:
         return {
             "inflight": self._inflight,
@@ -166,7 +177,7 @@ class Admission:
             "max_inflight": MAX_INFLIGHT,
             "max_queue": MAX_QUEUE,
             "max_inflight_per_key": MAX_INFLIGHT_PER_KEY,
-            "slots_used": self._used,
+            "slots_used": self.slots_used,
             "long_prompt_tokens": LONG_PROMPT_TOKENS,
             "max_request_cost": MAX_REQUEST_COST,
             "weighted_admissions": self.weighted_admissions,
@@ -402,7 +413,7 @@ class Stats:
 
         a("# HELP gateway_slots_used Admission slots currently held (weighted).")
         a("# TYPE gateway_slots_used gauge")
-        a(f"gateway_slots_used {adm._used}")
+        a(f"gateway_slots_used {adm.slots_used}")
 
         a("# HELP gateway_billing_write_errors_total Ledger writes that failed.")
         a("# TYPE gateway_billing_write_errors_total counter")

@@ -52,7 +52,7 @@ what happens outside it.
 | **Output per turn** | 192 tokens in the simulator (~3 s of decode) | 512 tokens → ~12 users; 1,024 → ~8; 2,048 → ~6. **Output length is the strongest lever after concurrency** |
 | **Conversation length** | ~1,000 tokens mean. Holds to ~1,300 at 20 users (0/20 over SLO) | At ~1,700 tokens, 6 of 20 users breach; at ~2,500, worst-user p95 hits 9.6 s. Prefill is quadratic and the first turn of a long conversation is a full miss |
 | **Prompt size per request** | Chat-length, ~500–1,000 tokens | A single 20k-token prompt holds every short request for ~20 s — the one documented failure (case 3 below) |
-| **Context window** | 32,768 tokens, hard (`rope_scaling: null`). Costs zero KV cache vs 4k — measured | Conversations that exceed it have their oldest turns dropped, reported in `X-Context-Trimmed-Messages`. Never a 400 |
+| **Context window** | 32,768 tokens, hard (`rope_scaling: null`). Costs zero KV cache vs 4k — measured | Oldest turns dropped, reported in `X-Context-Trimmed-Messages`. A single message too big to fit gets a **413** rather than the engine's 400 |
 | **Max output per call** | Gateway default **1,024** if the client sends none; **ceiling 2,048** (clamped, reported in a header) | Without this, vLLM defaults an absent `max_tokens` to *the rest of the window* — ~30k tokens, holding a slot for minutes |
 | **No EOS emitted** | Generation runs to `max_tokens`, `finish_reason: "length"`. The chat UI auto-continues up to 3 times (~6k tokens per turn) | There is no priority scheme. Continuous batching gives every running sequence one token per step; a slot is held for the *whole* stream. That is why the output bound exists |
 | **Stream duration** | Bounded at 300 s; slot released after | A client reading one byte per second cannot hold capacity |
@@ -85,7 +85,7 @@ every scheduler step as sequences finish and new ones are admitted.
 | --- | --- | --- |
 | Within one reply | KV blocks allocated on demand, 16 tokens at a time. If the 69,760-token pool fills, vLLM **preempts**: evicts a running sequence's blocks and re-prefills it later (V1 preempts by recompute; there is no CPU swap in V1) | **0 preemptions in every v2 run** — KV peaked at ~17%. v1 forced eviction deliberately and the gateway's accounting stayed exact (Boundary 4) |
 | Between turns | The conversation's history sits in the prefix cache as free blocks, evicted LRU. On the next turn vLLM reuses the longest cached prefix; a miss re-prefills everything at ~9x the cost | Hit rate **74–97%** across every run. Prefill is quadratic, so the cost of a miss grows faster than the conversation does |
-| At the window | Past 32,768 tokens the **gateway** drops the oldest non-system turns and reports it in `X-Context-Trimmed-Messages` | 95k tokens sent → 27 messages dropped → 200. Never a 400 |
+| At the window | Past 32,768 tokens the **gateway** drops the oldest non-system turns and reports it in `X-Context-Trimmed-Messages`. A *single* message too large to fit is refused with **413** before it costs a slot, since trimming never drops the current question | 95k tokens across many turns → 27 dropped → **200**. One 333k-token message → **413**, engine never called |
 
 **Best and worst, with the shape each was measured in** (throughput is
 meaningless without input/output lengths):
@@ -305,7 +305,7 @@ that produced it, are in
 
 ```powershell
 pip install -r gateway/requirements-dev.txt
-pytest                           # 25 contract tests, no GPU needed (this is what CI runs)
+pytest                           # 33 contract + admission tests, no GPU (this is what CI runs)
 pytest -m integration            # 1 test against the live stack
 node ui/test_markdown.mjs        # 25 renderer tests incl. XSS
 .\gateway\test_gateway.ps1       # auth, streaming, 401s

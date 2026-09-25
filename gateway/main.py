@@ -533,6 +533,31 @@ async def chat_completions(request: Request):
             clamped_from = requested
         else:
             reply_budget = requested
+        # Refuse what cannot fit, before it costs a slot. Trimming preserves
+        # system messages and the current question by policy, so a single
+        # enormous message survives it untouched and would otherwise reach the
+        # engine only to come back as a 400 - having already occupied one of
+        # six slots. 413 is the honest status: the entity is too large, and no
+        # amount of retrying changes that.
+        oversized = context.definitely_exceeds_window(
+            payload["messages"], window, reply_budget
+        )
+        if oversized is not None:
+            stats.record_status(413)
+            await record(key_row["key"], model, None, 413, is_stream, started)
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"This single message is too large for the model's context "
+                    f"window: at least ~{oversized:,} prompt tokens against a "
+                    f"{window:,}-token window, with {reply_budget:,} reserved for "
+                    f"the reply. Older turns are trimmed automatically, but the "
+                    f"system prompt and your current message are never dropped - "
+                    f"so shorten this message."
+                ),
+                headers=budget_headers(key_row),
+            )
+
         kept, trimmed_count, est_prompt_tokens = context.fit_messages(
             payload["messages"], window, reply_budget
         )

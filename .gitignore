@@ -13,9 +13,11 @@ venv/
 *.db-shm
 *.db.bak
 
-# Secrets and local config
+# Secrets and local config. The negation matters: `.env.*` would otherwise
+# swallow .env.example, which is documentation and must ship.
 .env
 .env.*
+!.env.example
 
 # Console captures from measurement runs. The JSON result files alongside them
 # are the evidence and are committed; these are the same numbers as terminal

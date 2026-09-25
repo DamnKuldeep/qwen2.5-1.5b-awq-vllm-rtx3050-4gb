@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sqlite3
 import statistics
 import sys
 import time
@@ -103,7 +102,6 @@ async def case_long_prompt_isolation(client: httpx.AsyncClient) -> None:
     keep being served. Their p95 TTFT should rise but stay in the low seconds,
     not stall for the ~20 s the big prefill takes."""
     model = await model_id(client)
-    window = await max_len(client)
 
     # ~26k tokens: large, and safely inside the 32,768 window with room to reply.
     #

@@ -56,6 +56,17 @@ from __future__ import annotations
 # turn early than emit a request the engine rejects.
 CHARS_PER_TOKEN = 3.0
 
+# The OPPOSITE bias, and it exists for the opposite decision.
+#
+# Trimming uses the pessimistic ratio above, because trimming one turn early is
+# cheap. REFUSING uses this optimistic one, because refusing a request that
+# would actually have fit is a bug the client cannot work around. 4.5 chars per
+# token is beyond what Qwen achieves on ordinary prose, so anything this
+# estimate still calls oversized is oversized under any tokenisation.
+#
+# The asymmetry is the point: err toward trimming, err away from refusing.
+OPTIMISTIC_CHARS_PER_TOKEN = 4.5
+
 # Per-message chat-template overhead (role markers, delimiters). Qwen's template
 # adds about 4; 8 is deliberate headroom.
 PER_MESSAGE_OVERHEAD = 8
@@ -144,3 +155,38 @@ def fit_messages(
 
     kept = [m for i, m in enumerate(messages) if i not in dropped]
     return kept, len(dropped), total
+
+
+def definitely_exceeds_window(
+    messages: list,
+    max_model_len: int,
+    max_tokens: int,
+) -> int | None:
+    """Optimistic token count, but only when the request cannot possibly fit.
+
+    Returns that count when even a generous tokenisation overflows the window,
+    and None otherwise.
+
+    WHY THIS EXISTS. `fit_messages` cannot drop system messages or the final
+    user message - dropping the question being asked is absurd, and the system
+    prompt is the shared prefix that makes prefix caching work. So a single
+    enormous message survives trimming untouched, reaches the engine, and comes
+    back as vLLM's 400 *after* it has occupied an admission slot.
+
+    A measured fuzz of the policy found exactly that: one 333,000-token user
+    message, `dropped=0`, straight through. The README claimed context overflow
+    was "never a 400"; for multi-turn overflow that was true, and for this case
+    it was not.
+
+    Catching it here turns an engine-side 400 into a gateway-side 413 that
+    names the limit, costs no GPU time, and holds no slot.
+    """
+    if not isinstance(messages, list) or not messages:
+        return None
+    chars = 0
+    for m in messages:
+        if isinstance(m, dict):
+            chars += len(_content_text(m.get("content")))
+    optimistic = int(chars / OPTIMISTIC_CHARS_PER_TOKEN) + TEMPLATE_OVERHEAD
+    budget = max_model_len - max(0, max_tokens)
+    return optimistic if optimistic > budget else None

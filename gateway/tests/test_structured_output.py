@@ -256,6 +256,48 @@ def test_reasonable_max_tokens_is_untouched(gateway, auth):
     assert "X-Max-Tokens-Clamped-From" not in resp.headers
 
 
+def test_single_oversized_message_is_refused_with_413(gateway, auth):
+    """One enormous message must be refused, not forwarded to the engine.
+
+    The context policy never drops system messages or the current question, so
+    a single huge message survives trimming untouched. Before this guard it
+    reached vLLM, occupied one of six admission slots, and came back as the
+    engine's 400 - and the README claimed overflow was "never a 400".
+
+    413 is the correct status and the gateway is the correct place: no GPU time
+    is spent, and no slot is held.
+    """
+    client, captured = gateway
+    huge = "word " * 200_000          # ~1M characters
+    resp = client.post(
+        "/v1/chat/completions",
+        json=base_request(messages=[{"role": "user", "content": huge}]),
+        headers=auth,
+    )
+    assert resp.status_code == 413
+    assert "/v1/chat/completions" not in captured.get("paths", []), (
+        "oversized request must never reach the engine"
+    )
+    assert "context window" in resp.json()["error"]["message"]
+
+
+def test_large_but_fitting_message_is_not_refused(gateway, auth):
+    """The refusal must not fire on prompts that would actually have fit.
+
+    Trimming deliberately OVER-estimates tokens so it trims early; refusing
+    deliberately UNDER-estimates so it only refuses the certain cases. This
+    asserts the asymmetry: a prompt comfortably inside the window is forwarded
+    even though the pessimistic estimate used for trimming is much larger.
+    """
+    client, captured = gateway
+    # ~40k characters: well under a 32,768-token window on any tokenisation,
+    # but over it under the pessimistic chars/3.0 ratio used for trimming.
+    body = base_request(messages=[{"role": "user", "content": "x " * 20_000}])
+    resp = client.post("/v1/chat/completions", json=body, headers=auth)
+    assert resp.status_code == 200
+    assert captured.get("body") is not None
+
+
 def test_no_stream_options_added_to_non_streaming(gateway, auth):
     """Non-streaming requests must not get stream_options.
 

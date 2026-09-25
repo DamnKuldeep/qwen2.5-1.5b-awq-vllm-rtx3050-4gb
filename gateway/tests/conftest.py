@@ -46,6 +46,7 @@ def gateway(tmp_path, monkeypatch):
 
     `captured` is a dict that the stub fills in with what it received:
         captured["body"]    - the parsed JSON body sent upstream
+        captured["paths"]   - every upstream path the gateway hit, in order
         captured["raw"]     - the exact bytes sent upstream
         captured["headers"] - the headers sent upstream
 
@@ -59,7 +60,12 @@ def gateway(tmp_path, monkeypatch):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # Record the path too: the gateway legitimately calls /v1/models to
+        # discover the context window, so "did upstream get called at all" is
+        # not the same question as "was the completion forwarded".
         captured["raw"] = request.content
+        captured["path"] = request.url.path
+        captured["paths"] = captured.get("paths", []) + [request.url.path]
         captured["headers"] = dict(request.headers)
         try:
             captured["body"] = json.loads(request.content)

@@ -45,6 +45,7 @@ matrix that reported it as a failure would be reporting arithmetic.
 | 2 | **One abusive key at 50 concurrent** | other users stay within SLO | normal users p95 **536 ms** vs 191 ms baseline (**+181%**, still 64% inside SLO); **0/10 over SLO**; abuser shed **4,669 of 4,749 (98.3%)** | ✅ |
 | 3 | **Single ~20k-token prompt** | short requests keep flowing; TTFT rises but stays in low seconds | short requests **108 ms → 19,698 ms** during the big prefill. All 8 completed, 0 shed | ⚠️ |
 | 4 | **Conversation outgrows the window** | 200 with oldest turns dropped and reported; never a hard 400 | HTTP **200**, `X-Context-Trimmed-Messages: 27`; ~95,488 tokens sent → engine saw **9,726** | ✅ |
+| 4b | **A single message larger than the window** | same policy | **Gap found by audit, now closed.** Trimming never drops the current question, so one 333k-token message passed through untrimmed and came back as the engine's 400 *after* taking a slot. The gateway now returns **413** before admission; the engine is never called | ✅ |
 | 5 | **Engine crash mid-stream** | 502, auto-recovery, gateway stays Running (liveness) while going NotReady (readiness) | crash detected **1.4 s**, automatic recovery **83.1 s**; `/health` **200 throughout**, `/ready` 503→200; **155×502**, 4×500, 3×200; **162 of 162** requests in ledger, **drift 0** | ✅ |
 | 6 | **Gateway restart under load** | in-flight fail cleanly, budgets intact | back in **10.4 s**; 12 in-flight failed with a dropped connection (no hang, no silent truncation), 4 served; ledger 17,854→17,858 rows and 4,976,558→4,977,083 tokens — **budgets survived** | ✅ |
 | 7 | **Client disconnects mid-stream** | slot released, usage still recorded | in-flight returned to **0**; ledger row written from the generator's `finally` | ✅ |
@@ -56,7 +57,7 @@ matrix that reported it as a failure would be reporting arithmetic.
 | 13 | **Thermal throttle under sustained load** | detected and alerted, not silent | detected by `watch_gpu.ps1`; **not alertable in Prometheus** — see below | ⚠️ |
 | 14 | **Cold start after restart** | first-request cost known and excluded | **3,292 ms vs ~310 ms** warm; every tool discards one request before recording | ✅ |
 
-**12 pass, 2 documented limitations, 0 unexplained failures.**
+**13 pass, 2 documented limitations, 0 unexplained failures.**
 
 **Reproduce cases 5 and 6:**
 
