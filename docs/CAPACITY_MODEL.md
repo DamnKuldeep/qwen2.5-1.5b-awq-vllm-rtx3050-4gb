@@ -48,6 +48,17 @@ Identical. Raising the window 8x cost zero memory. The only thing that moved
 was vLLM's reported max-concurrency figure (17.00x → 2.12x), which describes a
 worst case where every sequence runs to the full window — not an allocation.
 
+> **Why two KV numbers appear in this repository — 69,616 and 69,760.**
+> Both are real. vLLM *profiles free VRAM at startup*, and the Windows desktop
+> compositor's usage varies by a few MB between launches, so the pool lands
+> within ±0.2% of itself run to run. 144 tokens is 9 blocks, about 4 MB.
+>
+> The pair above is quoted as 69,616/69,616 because those two launches happened
+> back to back: that is what makes "identical" a measurement rather than a
+> coincidence. **69,760 is the figure from the shipped configuration** and is
+> the one used everywhere capacity is computed. The measurement protocol already
+> names this: differences under ±0.2% in KV cache size are noise, not an effect.
+
 The real costs of a large window are **latency and cache pressure**, and both
 are consequences of how long conversations actually get, not of the ceiling.
 

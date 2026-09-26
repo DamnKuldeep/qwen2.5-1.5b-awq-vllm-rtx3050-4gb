@@ -363,6 +363,11 @@ The compute-bound/bandwidth-bound distinction that began as an *explanation* in 
 
 **Answer quality.** A 1.5B model is meaningfully weaker than a 3B one. Every number above favours the 1.5B; none of them capture the reason someone might still choose the 3B. **The recommendation depends on a judgement this harness cannot make**, and the honest form of the result is: *if 1.5B-class quality is acceptable for the use case, it is 4.6x better on this hardware.*
 
+> **Superseded: the figure is 4.3x, not 4.6x.** 4.6x rested on a bare PASS at concurrency 4 — a result
+> 24 ms inside a 1,500 ms threshold, well within the ~24% session drift. Re-measuring with SLO *margins*
+> put the reliable ceiling at concurrency 5 (+35% margin) rather than 4, giving **4.3x**. That is the
+> number used everywhere else in this repository. A verdict that close to a threshold is noise, not a result.
+
 ---
 
 ## Experiment 3b — fp16 1.5B head-to-head at `--max-model-len 2048` (superseded, optional)

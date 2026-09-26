@@ -40,6 +40,46 @@ users at 100% utilisation    6 / 0.20                 = 30
 users at ~75% (usable)                                ≈ 22
 ```
 
+## Degradation is bounded — this is the whole point
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/degradation-dark.svg">
+  <img alt="p95 TTFT stays flat from 10 to 60 users while the shed rate rises; no user breaches the 1.5 s SLO at any level" src="docs/img/degradation-light.svg">
+</picture>
+
+**Offered load rose 6x; p95 TTFT went from 191 ms to 778 ms and stopped there.
+Not one user out of 58 breached the SLO at any level.** The excess was refused
+with `503` + `Retry-After` instead of being absorbed into a queue.
+
+**Bounded is not automatically acceptable.** The first configuration used a
+2.0 s queue timeout and produced an equally flat curve — but flat at 2,070 ms,
+above the objective, with 49 of 58 users breaching. Worst-case TTFT ≈ queue
+timeout + engine TTFT, so a 1.5 s target minus ~0.8 s of engine time leaves
+~0.6 s of queue budget. That is arithmetic, not tuning.
+
+> Refusing one request in ten more, so every request you *do* accept is served
+> within its target. That trade is the whole thesis.
+
+---
+
+## How a request flows
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/request-lifecycle-dark.svg">
+  <img alt="A request passes auth, budget, size, output bounding and admission control before reaching vLLM; each gate can refuse cheaply" src="docs/img/request-lifecycle-light.svg">
+</picture>
+
+**The gateway is the only limiter.** `--max-num-seqs` is set to 32 — far above
+the gateway's 6 — so the engine's own cap can never silently shape traffic the
+gateway believes it is controlling. One limiter, where the policy and the
+metrics live.
+
+Every refusal is cheap and specific: a `429` costs ~8 ms against ~5,000 ms to
+serve, a `413` never reaches the GPU at all, and a `503` carries `Retry-After`
+so a client can back off rather than guess.
+
+---
+
 ## The envelope — what "22 users" actually bounds
 
 Every capacity number has a shape it was measured in. This is the shape, and
@@ -62,13 +102,12 @@ what happens outside it.
 Full derivation, including which constraint binds first and when that changes,
 in **[docs/CAPACITY_MODEL.md](docs/CAPACITY_MODEL.md)**.
 
-## Three different numbers are called "concurrency" — here is which is which
+## Three numbers are called "concurrency". Only one is a limit.
 
-| Number | What it is | Fixed or dynamic |
-| ---: | --- | --- |
-| **6** | **Requests the gateway lets onto the GPU at once.** The measured SLO ceiling. This is the one that matters | The *cap* is fixed (`GATEWAY_MAX_INFLIGHT`). What fits under it is dynamic: a long prompt costs up to 4 of the 6 slots, and each API key's share is `⌈6 / contending keys⌉` |
-| **32** | `--max-num-seqs`: the engine's own batch ceiling | Fixed. Set above 6 on purpose so it can never be the binding limit |
-| **2.13x** | vLLM's startup line "maximum concurrency for 32,768 tokens" — how many *full-window* sequences the 69,760-token KV pool holds | Not a limit at all. PagedAttention allocates 16-token blocks on demand, so ~95 typical chat sequences fit; it only describes the worst case |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/concurrency-dark.svg">
+  <img alt="6 is the gateway's limit on requests decoding at once; 32 is the engine's batch ceiling set deliberately higher; 2.13x is vLLM's full-window figure and not a limit" src="docs/img/concurrency-light.svg">
+</picture>
 
 **So how many requests are actually processed on the GPU at once? Six, at
 most.** Fewer when a prompt is long: one ~20k-token prompt costs 4 slots,
@@ -123,37 +162,6 @@ happened.
 | **Output bound** (default 1,024 / cap 2,048) | absent `max_tokens` → ~30k-token hold | bounded ~30 s worst case | Slot hold time is finite |
 | **Measurement protocol** (heat-soak, nonce, control run) | 42% swings between identical runs | reproduces within ~2% | The numbers above mean something |
 
-### Degradation is bounded, and this is the graph that shows it
-
-Measured with `chat_sim.py` — Poisson arrivals, log-normal think time,
-multi-turn conversations that accumulate context. Shipped configuration,
-one `#` per 50 ms:
-
-```text
-users | p95 TTFT                       SLO      | shed % | users over SLO
-------+--------------------------------|--------+--------+---------------
-   10 | ####                 191 ms    |        |   0.0  |   0 / 10
-   20 | #########            434 ms    |        |   8.0  |   0 / 20
-   30 | ##############       706 ms    |        |  25.1  |   0 / 30
-   40 | ##############       717 ms    |        |  38.9  |   0 / 40
-   60 | ################     778 ms    |        |  56.9  |   0 / 58
-      +--------------------------------|
-                                    1500 ms
-```
-
-**Offered load rose 6x; p95 TTFT rose from 191 ms to 778 ms and stayed there.
-Not one user out of 58 breached the SLO at any level.** The excess was refused
-with `503` + `Retry-After` instead of being absorbed into a queue.
-
-**Bounded is not automatically acceptable.** The first configuration used a
-2.0 s queue timeout and produced an equally flat curve — but flat at 2,070 ms,
-above the objective, with 49 of 58 users breaching. Worst-case TTFT ≈ queue
-timeout + engine TTFT, so a 1.5 s target minus ~0.8 s of engine time leaves
-~0.6 s of queue budget. That is arithmetic, not tuning.
-
-> Refusing one request in ten more, so every request you *do* accept is served
-> within its target. That trade is the whole thesis.
-
 ---
 
 ## What watches it
@@ -191,38 +199,7 @@ engine's own metrics, and the gateway's admission view.
 | Conversation exceeds 32k | 95k tokens sent → 27 oldest messages dropped → engine saw 9.7k. HTTP 200 |
 | **A single 20k-token prompt** | **Short requests blocked for ~20 s.** The engine-side fix exists and crash-loops this vLLM build (V0-only). The gateway bounds how many such prompts run; it cannot remove the blocking. Documented, not passed |
 
-12 pass, 2 documented limitations, 0 unexplained.
-
----
-
-## Architecture
-
-```text
-                    ┌──────────────────────────────────────────┐
-  browser ────────► │  gateway  (FastAPI, :8080)               │
-  OpenAI client ──► │                                          │
-                    │   auth ─► budget ─► context policy ─►    │
-                    │   output bound ─►   admission control ─┐ │
-                    │                                        │ │
-                    │   /chat  /dashboard  /metrics  /ready   │ │
-                    └────────────────────────────────────────┼─┘
-                              │                              │
-                    ┌─────────▼─────────┐        ┌───────────▼──────────────┐
-                    │ SQLite            │        │ vLLM (:8000)             │
-                    │ keys, budgets,    │        │ Qwen2.5-1.5B-AWQ         │
-                    │ request ledger    │        │ awq_marlin · prefix cache│
-                    └───────────────────┘        │ 69,760-token KV pool     │
-                                                 └───────────┬──────────────┘
-                    ┌───────────────────┐                    │
-                    │ Prometheus :9090  │◄───────────────────┘
-                    │ Grafana    :3000  │◄─── gateway /metrics
-                    └───────────────────┘
-```
-
-**The gateway is the only limiter.** `--max-num-seqs` is set to 32 — far above
-the gateway's 6 — specifically so the engine's own cap can never silently shape
-traffic the gateway believes it is controlling. One limiter, where the policy
-and the metrics live.
+13 pass, 2 documented limitations, 0 unexplained.
 
 ---
 

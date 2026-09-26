@@ -107,7 +107,7 @@ The driver version is pinned deliberately: `vllm/vllm-openai:v0.11.0` declares `
 
 **The defence, structural rather than disciplinary.** The gateway parses the body into an **untyped `dict`** and never into a schema. A dict has no allowlist, so nothing can be dropped — including fields that do not exist yet. (Stage 3 forwarded raw bytes, which was stronger; Stage 4 traded that away to inject `stream_options.include_usage` for streaming budget accounting. The trade is recorded in `DECISIONS.md`, and it is why the contract test became load-bearing.)
 
-**The proof.** 22 contract tests run against a stub upstream that records exactly what the gateway sent. The decisive one is not `response_format`-specific:
+**The proof.** 22 contract tests run against a stub upstream that records exactly what the gateway sent. (They are now the Boundary-1 subset of a 33-test suite; the rest cover admission control, output bounding and context overflow, all added in v2.) The decisive one is not `response_format`-specific:
 
 ```python
 def test_unknown_future_field_survives(gateway, auth):

@@ -297,7 +297,7 @@ README with the capacity model, the measurement methodology, the reproduction st
 
 Do not rebuild or re-litigate these:
 
-- **Boundary 1** — untyped-dict forwarding, 22 contract tests, proven to bite (14 failures under sabotage)
+- **Boundary 1** — untyped-dict forwarding, 22 contract tests, proven to bite (14 failures under sabotage). *v2 note: still 22, now inside a 33-test suite.*
 - **Boundary 2** — pinning discipline (extend to the 1.5B's revision)
 - **Boundary 3** — Prometheus scraping vLLM directly, 13-panel dashboard
 - **Boundary 4** — `finally`-block accounting, verified exact under forced eviction
