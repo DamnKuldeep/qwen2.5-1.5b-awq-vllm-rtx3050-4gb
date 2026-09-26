@@ -1,5 +1,18 @@
 # v2 Scope — Multi-User Chat Service
 
+> **This is the PLAN, written before v2 was built. Several of its predictions
+> were wrong, and that is why it is kept.**
+>
+> Read it for the reasoning that shaped the work, not for results. What was
+> actually measured is in **[CAPACITY_MODEL.md](CAPACITY_MODEL.md)** and
+> **[FAILURE_MATRIX.md](FAILURE_MATRIX.md)**.
+>
+> | This document predicted | What was measured |
+> | --- | --- |
+> | ~17–35 users if cache-bound, ~80–110 if compute-bound — "a 6x uncertainty" | **~22 users**, and neither bound was the reason: **admission control** binds first |
+> | A **knee** in the capacity curve as the prefix cache collapses | **No knee.** Hit rate held 74–97% from 10 to 60 users — load shedding keeps the working set inside the pool, so the two mechanisms reinforce |
+> | `cached_tokens` per request would enable cost-weighted admission | The field is **`null`** on this build — and it arrives *after* the work, so it could never have driven admission anyway. Weighting uses prompt length instead |
+
 v1 asked *"can this hardware serve an API, and is it hardened against four named failure boundaries?"* Answered: yes, with the evidence in `FINAL_REPORT.md`.
 
 **v2 asks a harder question: how many real people can talk to it at once, and what happens at the edge of that?**

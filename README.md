@@ -337,6 +337,7 @@ in [docs/FINAL_REPORT.md §11](docs/FINAL_REPORT.md#11-what-this-project-got-wro
 | The ten measurement rules and the failure behind each | [benchmarks/optimization_results.md](benchmarks/optimization_results.md) |
 | The raw chronological log — every stage, every bug, every correction | [PROGRESS_LOG.md](PROGRESS_LOG.md) |
 | Every new tool or flag, explained the first time it appeared | [docs/CONCEPTS_EXPLAINED.md](docs/CONCEPTS_EXPLAINED.md) |
+| **A map of all of the above** | **[docs/README.md](docs/README.md)** |
 
 ---
 

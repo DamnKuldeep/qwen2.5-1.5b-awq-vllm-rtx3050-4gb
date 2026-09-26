@@ -1,5 +1,11 @@
 # Finalization Plan
 
+> **Executed and complete.** This is the plan as written; the results are in
+> [PROGRESS_LOG.md](../PROGRESS_LOG.md) and [CAPACITY_MODEL.md](CAPACITY_MODEL.md).
+> Two of its instructions turned out to be wrong and are corrected in place
+> below: the ≤50 °C cooldown target (unreachable, and unnecessary) and the
+> phase ordering (it spent the cold card on the model that was not shipped).
+
 Everything needed to close v1 out: reclaim resources, produce canonical numbers for both models on a cold card, find the 1.5B-AWQ's absolute throughput ceiling, re-verify every boundary and test against the finalized model, then speculative decoding and Kubernetes.
 
 **Run the phases in order.** Several depend on the GPU being cold or on a specific engine config being live.
