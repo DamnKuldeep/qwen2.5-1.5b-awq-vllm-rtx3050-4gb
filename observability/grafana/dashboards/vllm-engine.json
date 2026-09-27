@@ -1,27 +1,48 @@
 {
   "uid": "vllm-engine",
   "title": "Inference Engine Health",
-  "tags": ["vllm", "inference"],
-  "timezone": "browser",
+  "tags": [
+    "vllm",
+    "inference"
+  ],
+  "timezone": "utc",
   "schemaVersion": 39,
   "version": 2,
   "refresh": "5s",
-  "time": { "from": "now-15m", "to": "now" },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
   "editable": true,
   "panels": [
     {
+      "id": 1,
       "type": "row",
       "title": "Boundary 3 — the two metrics wrappers drop",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "collapsed": false,
       "panels": []
     },
     {
+      "id": 2,
       "type": "timeseries",
       "title": "GPU KV cache usage",
       "description": "Fraction of PagedAttention blocks in use. At 100% vLLM must preempt and evict running sequences — that is Boundary 4. Stage 2 measured only 18.5% at concurrency 8, which is why the Stage 9 ceiling is expected to be thermal/compute rather than memory.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -33,26 +54,53 @@
         "defaults": {
           "unit": "percent",
           "min": 0,
-          "custom": { "fillOpacity": 15, "lineWidth": 2, "axisSoftMax": 25 },
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "axisSoftMax": 25
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 75 },
-              { "color": "red", "value": 90 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
             ]
           }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 3,
       "type": "timeseries",
       "title": "Prefix cache hit rate",
       "description": "Fraction of prefill token-blocks served from cache. In multi-turn chat this climbs steeply because each turn's prompt is the previous turn's prompt plus new text — the reason TTFT stays flat as a conversation grows (Stage 6, observed reaching 88%).",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -70,50 +118,112 @@
           "unit": "percent",
           "min": 0,
           "max": 100,
-          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 4,
       "type": "row",
       "title": "Scheduler",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
       "collapsed": false,
       "panels": []
     },
     {
+      "id": 5,
       "type": "timeseries",
       "title": "Requests running vs waiting",
       "description": "Running is the batch size the scheduler is actually executing, capped by --max-num-seqs (8). Waiting counts requests not yet admitted to the running batch — which includes ones that merely arrived between scheduler steps, so a small transient waiting count is NORMAL and does not mean saturation (observed peaking at 3 at concurrency 8, with running at 8). The saturation signal is waiting staying elevated while running is pinned at max. For a cleaner read, use the Queue time panel: it measures how long requests actually waited rather than how many were momentarily unscheduled.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "refId": "A", "expr": "vllm:num_requests_running", "legendFormat": "running" },
-        { "refId": "B", "expr": "vllm:num_requests_waiting", "legendFormat": "waiting" }
+        {
+          "refId": "A",
+          "expr": "vllm:num_requests_running",
+          "legendFormat": "running"
+        },
+        {
+          "refId": "B",
+          "expr": "vllm:num_requests_waiting",
+          "legendFormat": "waiting"
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "min": 0,
-          "custom": { "fillOpacity": 20, "lineWidth": 2, "stacking": { "mode": "none" } }
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "none"
+            }
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "waiting" },
-            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+            "matcher": {
+              "id": "byName",
+              "options": "waiting"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
           }
         ]
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 6,
       "type": "timeseries",
       "title": "Token throughput",
       "description": "Prompt tokens/s is prefill work; generation tokens/s is decode. Stage 2 baseline: 33.4 generation tok/s single-stream, 137.2 at concurrency 8.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -130,25 +240,48 @@
         "defaults": {
           "unit": "short",
           "min": 0,
-          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 7,
       "type": "row",
       "title": "Latency",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
       "collapsed": false,
       "panels": []
     },
     {
+      "id": 8,
       "type": "timeseries",
       "title": "Time to first token (TTFT)",
       "description": "Prefill plus queueing. Compute-bound, so it degrades as the GPU thermally throttles and as the queue grows. Stage 2 baseline median: 654 ms at 512-token prompts.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -170,25 +303,48 @@
         "defaults": {
           "unit": "s",
           "min": 0,
-          "custom": { "fillOpacity": 0, "lineWidth": 2 },
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 2
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1.5 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1.5
+              }
             ]
           }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 9,
       "type": "timeseries",
       "title": "Time per output token (TPOT)",
       "description": "Decode speed. Memory-bandwidth-bound, so it is largely insulated from thermal throttling (memory clock does not throttle) but degrades with batch size as sequences contend for the bus. Stage 2 baseline median: 26.7 ms single-stream, 44.4 ms at concurrency 8.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -212,19 +368,36 @@
           "custom": {
             "fillOpacity": 0,
             "lineWidth": 2,
-            "scaleDistribution": { "type": "log", "log": 10 }
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            }
           }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 10,
       "type": "timeseries",
       "title": "End-to-end request latency",
       "description": "What a non-streaming client experiences. Stage 2 baseline median: 4.05 s single-stream, 8.55 s at concurrency 8.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -238,17 +411,38 @@
         }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "s", "min": 0, "custom": { "fillOpacity": 0, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 11,
       "type": "timeseries",
       "title": "Preemptions",
       "description": "BOUNDARY 4. Non-zero means the engine ran out of KV cache and evicted running sequences to make room. Stage 10 forces this deliberately and checks the gateway's own request accounting survives it.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -260,25 +454,49 @@
         "defaults": {
           "unit": "short",
           "min": 0,
-          "custom": { "fillOpacity": 30, "lineWidth": 2, "axisSoftMax": 5 },
+          "custom": {
+            "fillOpacity": 30,
+            "lineWidth": 2,
+            "axisSoftMax": 5
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 12,
       "type": "timeseries",
       "title": "Inter-token latency (ITL) — the tail metric",
       "description": "vLLM exports ITL as a SEPARATE histogram from TPOT, and the distinction matters. TPOT averages across a whole request and smooths individual stalls away; ITL is per-token and exposes them. Stage 2 measured P99 ITL degrading 19x (33.6 ms to 637.6 ms) at concurrency 8 while mean TPOT moved only 72% — the stalls are scheduler pauses when an arriving request's prefill preempts ongoing decode. Watch this panel, not TPOT, in Stage 10.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -297,24 +515,52 @@
           "custom": {
             "fillOpacity": 0,
             "lineWidth": 2,
-            "scaleDistribution": { "type": "log", "log": 10 }
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            }
           }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "p99" },
-            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+            "matcher": {
+              "id": "byName",
+              "options": "p99"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
           }
         ]
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 13,
       "type": "timeseries",
       "title": "Queue time",
       "description": "Time a request spent waiting before the scheduler picked it up, separate from prefill and decode. This is what disambiguates a rising TTFT: if queue time is flat the GPU itself got slower, if queue time is rising the engine is saturated and requests are waiting behind others. Stage 9 needs exactly this distinction.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "refId": "A",
@@ -333,10 +579,22 @@
         }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "s", "min": 0, "custom": { "fillOpacity": 0, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     }
   ],
   "templating": {
@@ -345,10 +603,15 @@
         "name": "DS_PROMETHEUS",
         "type": "datasource",
         "query": "prometheus",
-        "current": { "text": "Prometheus", "value": "Prometheus" },
+        "current": {
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
         "hide": 0
       }
     ]
   },
-  "annotations": { "list": [] }
+  "annotations": {
+    "list": []
+  }
 }

@@ -34,6 +34,17 @@ Aggregating across requests hides the user who was unlucky every single turn.
 A user cares about the p95 of THEIR turns. This reports both, and the gap
 between them is itself a fairness signal.
 
+A REFUSED MESSAGE IS RETRIED, AND ITS WAIT COUNTS
+--------------------------------------------------
+A 503 is not the end of a user's request; it is a delay. The simulated client
+behaves like the OpenAI SDK plus a person: it honours `Retry-After` for two
+quick retries, then the person gives up for a think time and sends the same
+message again. The headline metric is SLO ATTAINMENT - the share of messages
+whose first token arrived within the SLO, measured from the FIRST send and so
+including every refusal and retry wait. Latency of admitted requests alone is
+still reported, but it is the engine's view, not the user's: judged that way,
+refusing everyone would score perfectly.
+
 Usage:
     python load_testing/chat_sim.py --users 20 --duration 120 --out results.json
     python load_testing/chat_sim.py --users 40 --pattern burst --out burst.json
@@ -104,6 +115,11 @@ FILLER_WORDS = (
 ).split()
 
 
+# Retries a client makes on the server's Retry-After hint before the person
+# behind it gives up for a think time. Two is the OpenAI Python SDK's default.
+QUICK_RETRIES = 2
+
+
 # --------------------------------------------------------------------------
 # Records
 # --------------------------------------------------------------------------
@@ -124,6 +140,9 @@ class TurnRecord:
     started_at: float
     conversation_tokens: int
     shed_reason: str | None = None
+    retry_after_s: float | None = None
+    message_started_at: float = 0.0   # first send of this user message
+    attempt: int = 1                  # 1 = first send, 2+ = retries
 
 
 @dataclass
@@ -137,6 +156,9 @@ class UserSummary:
     ttft_p95: float | None
     ttft_max: float | None
     mean_conversation_tokens: float
+    messages: int = 0
+    messages_within_slo: int = 0
+    perceived_p95: float | None = None   # None when a message was never served
 
 
 def pct(values: list[float], p: float) -> float | None:
@@ -150,7 +172,8 @@ def pct(values: list[float], p: float) -> float | None:
         return None
     s = sorted(values)
     k = max(1, math.ceil(p / 100 * len(s)))
-    return round(s[k - 1], 1)
+    v = s[k - 1]
+    return v if math.isinf(v) else round(v, 1)
 
 
 # --------------------------------------------------------------------------
@@ -217,45 +240,83 @@ class ChatSim:
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         topic = rng.choice(TOPICS)
+        pending: str | None = None  # a refused message, to be sent again
+        served = 0
+        attempt = 0
+        message_started = 0.0
 
-        for turn in range(self.args.turns):
+        # `turns` counts MESSAGES SERVED, not attempts: a refused message is
+        # the same message, sent again.
+        while served < self.args.turns:
             if time.perf_counter() >= self.stop_at:
                 return
 
-            if turn == 0:
-                text = f"I'm working on {topic}. Give me a practical overview of how it works."
+            if pending is None:
+                if served == 0:
+                    text = f"I'm working on {topic}. Give me a practical overview of how it works."
+                    # Pad the opening turn when this user is simulating a long
+                    # conversation, so the working set reaches its target size
+                    # quickly instead of needing 40 turns of real accumulation.
+                    if target_tokens > 600:
+                        pad_words = int((target_tokens - 200) * 0.75)
+                        text += "\n\nFor context, here are my notes:\n" + " ".join(
+                            rng.choice(FILLER_WORDS) for _ in range(pad_words)
+                        )
+                else:
+                    text = rng.choice(FOLLOW_UPS)
+                message_started = time.perf_counter()
+                attempt = 0
             else:
-                text = rng.choice(FOLLOW_UPS)
-
-            # Pad the opening turn when this user is simulating a long
-            # conversation, so the working set reaches its target size quickly
-            # instead of needing 40 turns of real accumulation to get there.
-            if turn == 0 and target_tokens > 600:
-                pad_words = int((target_tokens - 200) * 0.75)
-                text += "\n\nFor context, here are my notes:\n" + " ".join(
-                    rng.choice(FILLER_WORDS) for _ in range(pad_words)
-                )
+                text = pending
+            attempt += 1
 
             messages.append({"role": "user", "content": text})
-            record = await self.one_turn(client, user, turn, api_key, messages)
+            record = await self.one_turn(client, user, served, api_key, messages)
+            record.message_started_at = message_started
+            record.attempt = attempt
             self.records.append(record)
 
-            if record.status == 200 and record.completion_tokens:
+            if record.status == 200:
                 # The reply is appended so the NEXT turn resends it. This is
                 # what makes the conversation accumulate, and it is the whole
                 # reason this simulator exists.
-                messages.append({"role": "assistant", "content": "x " * record.completion_tokens})
+                if record.completion_tokens:
+                    messages.append({"role": "assistant",
+                                     "content": "x " * record.completion_tokens})
+                else:
+                    messages.pop()
+                pending = None
+                served += 1
+                think = None
             else:
-                messages.pop()  # a shed turn is not part of the conversation
+                # A refused message is not part of the conversation yet, but
+                # the user still wants the answer, so it is SENT AGAIN.
+                #
+                # The first version dropped it and moved on to a follow-up.
+                # When the dropped turn was the padded opening of a long
+                # conversation, the whole long context silently vanished, so a
+                # run that shed more carried a LIGHTER workload and looked
+                # better for it: in a scheduler ablation, same seed, the arms
+                # ended up 20% apart in mean prompt size purely from which
+                # openings happened to be shed.
+                messages.pop()
+                pending = text
+                if attempt % (QUICK_RETRIES + 1) != 0:
+                    # SDK-style: honour the server's hint, with jitter so
+                    # refused users do not come back in lockstep.
+                    think = (record.retry_after_s or 2.0) + rng.uniform(0.0, 1.0)
+                else:
+                    think = None  # quick retries exhausted: a person waits
 
-            # Log-normal think time. Real users are not uniform: most reply
-            # quickly, a few take a very long time, and that right tail is what
-            # decides how many conversations sit idle in the cache being
-            # evicted. A uniform distribution would understate eviction.
-            think = rng.lognormvariate(
-                math.log(max(0.5, self.args.think_mean)), self.args.think_sigma
-            )
-            think = min(think, self.args.think_max)
+            if think is None:
+                # Log-normal think time. Real users are not uniform: most reply
+                # quickly, a few take a very long time, and that right tail is
+                # what decides how many conversations sit idle in the cache
+                # being evicted. A uniform distribution would understate eviction.
+                think = rng.lognormvariate(
+                    math.log(max(0.5, self.args.think_mean)), self.args.think_sigma
+                )
+                think = min(think, self.args.think_max)
             if time.perf_counter() + think >= self.stop_at:
                 return
             await asyncio.sleep(think)
@@ -298,10 +359,14 @@ class ChatSim:
 
                 if status != 200:
                     await resp.aread()
+                    try:
+                        retry_after = float(resp.headers.get("Retry-After", ""))
+                    except ValueError:
+                        retry_after = None
                     return TurnRecord(user, turn, status, None,
                                       (time.perf_counter() - started) * 1000, None,
                                       0, 0, queue_wait, trimmed, started,
-                                      conversation_tokens, shed_reason)
+                                      conversation_tokens, shed_reason, retry_after)
 
                 buf = ""
                 async for chunk in resp.aiter_text():
@@ -433,10 +498,16 @@ class ChatSim:
         """Never hardcode what the server is serving - v1 lost a whole ramp to that."""
         if self.args.model:
             return self.args.model
-        resp = await client.get("/v1/models",
-                                headers={"Authorization": f"Bearer {self.args.api_key}"})
+        # A few attempts: one transient 502 here used to kill a whole run -
+        # and, in the evidence suite, the heat soak that the next run relied on.
+        for attempt in range(5):
+            resp = await client.get("/v1/models",
+                                    headers={"Authorization": f"Bearer {self.args.api_key}"})
+            if resp.status_code == 200:
+                return resp.json()["data"][0]["id"]
+            await asyncio.sleep(1.0 + attempt)
         resp.raise_for_status()
-        return resp.json()["data"][0]["id"]
+        return ""
 
     async def engine_config(self) -> dict:
         """Embed the engine's own config in the results file.
@@ -498,8 +569,30 @@ class ChatSim:
         by_user: dict[int, list[TurnRecord]] = {}
         for r in real:
             by_user.setdefault(r.user, []).append(r)
+        # Message level: every attempt at one user message, in order.
+        slo_ms = args.slo_ttft * 1000
+        by_message: dict[tuple[int, int], list[TurnRecord]] = {}
+        for r in real:
+            by_message.setdefault((r.user, r.turn), []).append(r)
+
+        def perceived(attempts: list[TurnRecord]) -> float | None:
+            """First send to first token, including every refusal and wait."""
+            last = attempts[-1]
+            if last.status != 200 or last.ttft_ms is None:
+                return None
+            return (last.started_at - last.message_started_at) * 1000 + last.ttft_ms
+
+        msg_perceived = {k: perceived(v) for k, v in by_message.items()}
+        served_msgs = [v for v in msg_perceived.values() if v is not None]
+        first_try = sum(1 for k, v in by_message.items()
+                        if msg_perceived[k] is not None and len(v) == 1)
+        within = sum(1 for v in served_msgs if v <= slo_ms)
+
         for uid, rs in sorted(by_user.items()):
             t = [r.ttft_ms for r in rs if r.ttft_ms is not None]
+            mine = [msg_perceived[k] for k in by_message if k[0] == uid]
+            unserved = any(v is None for v in mine)
+            finite = [v for v in mine if v is not None]
             per_user.append(UserSummary(
                 user=uid, turns=len(rs),
                 ok=sum(1 for r in rs if r.status == 200),
@@ -510,6 +603,9 @@ class ChatSim:
                 mean_conversation_tokens=round(
                     statistics.mean([r.prompt_tokens for r in rs if r.prompt_tokens]) , 1)
                 if any(r.prompt_tokens for r in rs) else 0.0,
+                messages=len(mine),
+                messages_within_slo=sum(1 for v in finite if v <= slo_ms),
+                perceived_p95=None if unserved else pct(finite, 95),
             ))
 
         all_ttft = [r.ttft_ms for r in ok if r.ttft_ms is not None]
@@ -517,6 +613,10 @@ class ChatSim:
         # distribution of those. The worst user's p95 is the number that
         # decides whether anyone had a bad time, and an aggregate p95 hides it.
         user_p95s = [u.ttft_p95 for u in per_user if u.ttft_p95 is not None]
+        # The same, from the user's side. A user with a message that was never
+        # served has no finite p95 - they breached, whatever their other turns did.
+        perceived_p95s = [u.perceived_p95 if u.perceived_p95 is not None else math.inf
+                          for u in per_user if u.messages]
 
         dq = after.get("queries", 0) - before.get("queries", 0)
         dh = after.get("hits", 0) - before.get("hits", 0)
@@ -547,6 +647,26 @@ class ChatSim:
                 "output_tok_per_s": round(total_out / wall, 1) if wall > 0 else 0,
                 "mean_prompt_tokens": round(
                     statistics.mean([r.prompt_tokens for r in ok]), 1) if ok else 0,
+            },
+            "messages": {
+                "sent": len(by_message),
+                "served_first_try": first_try,
+                "served_after_retry": len(served_msgs) - first_try,
+                "unserved": len(by_message) - len(served_msgs),
+                "slo_attainment_pct": round(100 * within / len(by_message), 1) if by_message else 0,
+                "goodput_per_s": round(within / wall, 3) if wall > 0 else 0,
+            },
+            "ttft_ms_user_perceived": {
+                "p50": pct(served_msgs, 50), "p95": pct(served_msgs, 95),
+                "p99": pct(served_msgs, 99),
+                "max": round(max(served_msgs), 1) if served_msgs else None,
+            },
+            "per_user_perceived": {
+                "median_user_p95": (lambda v: None if v is None or math.isinf(v) else v)(
+                    pct(perceived_p95s, 50)),
+                "users_within_slo": sum(1 for v in perceived_p95s if v <= slo_ms),
+                "users_with_unserved_message": sum(1 for v in perceived_p95s if math.isinf(v)),
+                "users_total": len(perceived_p95s),
             },
             "ttft_ms_all_requests": {
                 "p50": pct(all_ttft, 50), "p95": pct(all_ttft, 95),
@@ -633,11 +753,17 @@ def main() -> int:
     pu = result["ttft_ms_per_user_p95"]
     print(f"\n{args.pattern} | {args.users} users | {args.duration:g}s | "
           f"think ~{args.think_mean:g}s | seed {args.seed}")
-    print(f"  turns        {t['turns_ok']} ok, {t['turns_shed_503']} shed (503), "
-          f"{t['turns_error']} error   [{t['shed_rate_pct']}% shed]")
+    print(f"  attempts     {t['turns_ok']} ok, {t['turns_shed_503']} refused (503), "
+          f"{t['turns_error']} error   [{t['shed_rate_pct']}% of attempts refused]")
     print(f"  throughput   {t['output_tok_per_s']} tok/s out, "
           f"mean prompt {t['mean_prompt_tokens']:.0f} tok")
-    print(f"  TTFT all     p50 {result['ttft_ms_all_requests']['p50']}  "
+    m, up, pp = result["messages"], result["ttft_ms_user_perceived"], result["per_user_perceived"]
+    print(f"  messages     {m['sent']} sent: {m['served_first_try']} first try, "
+          f"{m['served_after_retry']} after retry, {m['unserved']} never served")
+    print(f"  SLO          {m['slo_attainment_pct']}% of messages had a first token within "
+          f"{args.slo_ttft:g}s of first send   [{pp['users_within_slo']}/{pp['users_total']} users]")
+    print(f"  TTFT user    p50 {up['p50']}  p95 {up['p95']}  p99 {up['p99']} ms  (incl. retries)")
+    print(f"  TTFT admitted p50 {result['ttft_ms_all_requests']['p50']}  "
           f"p95 {result['ttft_ms_all_requests']['p95']}  "
           f"p99 {result['ttft_ms_all_requests']['p99']} ms")
     print(f"  TTFT p95/user median {pu['median_user']} ms, worst {pu['worst_user']} ms, "

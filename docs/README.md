@@ -8,6 +8,7 @@ whichever matches yours.
 | Document | Answers |
 | --- | --- |
 | **[../README.md](../README.md)** | What is this, how many users, how do I run it. The pitch, with the headline numbers and the diagrams |
+| **[RESULTS.md](RESULTS.md)** | *Every scenario, every number, in one place*, generated from the result files and never typed. SLO attainment from the user's side (retries included) across the capacity sweep, traffic shapes, conversation lengths and an abusive client; the ablations behind every shipped setting; failure injection; live Grafana captures |
 | **[CAPACITY_MODEL.md](CAPACITY_MODEL.md)** | *How many people can talk to this at once, and what decides the answer.* The derivation, the measured curve, the levers, and exactly where each number stops being true |
 | **[FAILURE_MATRIX.md](FAILURE_MATRIX.md)** | *What happens when it breaks.* Fourteen failure cases, each with the behaviour expected **before** testing next to the behaviour measured after |
 
@@ -24,6 +25,7 @@ whichever matches yours.
 
 | Document | Answers |
 | --- | --- |
+| **[../benchmarks/run_evidence_suite.ps1](../benchmarks/run_evidence_suite.ps1)** | The one command behind RESULTS.md: heat soak, capacity sweep with a control, traffic shapes, conversation lengths, fairness, dashboard capture, failure injection, kill tests. `ablate_long_prefill.ps1` and `ablate_gateway.ps1` produce the tuning arms |
 | **[../benchmarks/optimization_results.md](../benchmarks/optimization_results.md)** | **The measurement protocol** — ten rules, each traceable to the specific failure that produced it. Read this before comparing any number here to any number elsewhere |
 | **[../benchmarks/baseline.md](../benchmarks/baseline.md)** | The v1 baseline, and the thermal protocol that measuring it forced into existence |
 | **[../PROGRESS_LOG.md](../PROGRESS_LOG.md)** | The raw chronological record. Append-only: where something later turned out wrong, a correction was added rather than the original edited. Long, and deliberately not summarised |
@@ -35,19 +37,28 @@ measurement contradicted. Each carries a banner saying so.
 
 | Document | Was |
 | --- | --- |
+| **[../PRODUCT_SPEC.md](../PRODUCT_SPEC.md)** | The v1 spec: what the product should do and what was deliberately out of scope |
+| **[../PROJECT_PLAN.md](../PROJECT_PLAN.md)** | The v1 stage-by-stage build plan (Stages 0–13) |
 | **[V2_SCOPE.md](V2_SCOPE.md)** | The v2 plan. Predicted a prefix-cache knee that never appeared |
 | **[FINALIZATION_PLAN.md](FINALIZATION_PLAN.md)** | The v1 close-out plan. Two of its instructions were wrong and are corrected in place |
 | **[reading_reference/](reading_reference/)** | Background study notes from before the project started, synthesised from 14 sources |
 
-## Diagrams
+## Images — all generated, none hand-drawn
 
-`img/` holds the SVGs used in the README, in light and dark variants.
-They are generated — edit **[img/_gen_diagrams.py](img/_gen_diagrams.py)** and
-re-run it, rather than editing the SVGs by hand:
+| Files | Made by | From |
+| --- | --- | --- |
+| `img/*-light.svg`, `img/*-dark.svg` | [`img/_gen_diagrams.py`](img/_gen_diagrams.py) | Constants, and `load_testing/results/*.json` for the charts |
+| `img/session-*.svg` | [`../benchmarks/plot_prometheus.py`](../benchmarks/plot_prometheus.py) | Prometheus range queries over a whole test session |
+| `img/grafana-*.png` | [`../benchmarks/capture_dashboards.py`](../benchmarks/capture_dashboards.py) | Grafana's own renderer, over the absolute window the evidence suite ran in |
+
+Regenerate rather than edit. Every chart reads the same data the dashboards do,
+so none of them can drift from the measurements they draw:
 
 ```bash
 python docs/img/_gen_diagrams.py
+python benchmarks/build_results_page.py
 ```
 
-The degradation chart reads its numbers directly from
-`load_testing/results/*.json`, so it cannot drift from the measurements it draws.
+Each SVG exists twice, once per theme, because GitHub strips `<style>` and media
+queries from SVG — `<picture><source media="(prefers-color-scheme: dark)">` is the
+only theme mechanism it honours.

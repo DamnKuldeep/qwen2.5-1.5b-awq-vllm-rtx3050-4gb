@@ -178,6 +178,7 @@ groups:
           summary: "Generation throughput {{ $value }} tok/s with 3+ requests in flight"
           description: >
             Below the measured floor for this model at this concurrency
-            (~295 tok/s at 6 in flight, worst observed ~188). With the queue
+            (~300 tok/s at 8-10 in flight on the chat workload, ~295 at 6 on
+            the cold-prompt ramp, worst observed ~188). With the queue
             busy and the cache healthy, suspect GPU clocks. Check
             benchmarks/watch_gpu.ps1 for pstate and clocks_event_reasons.

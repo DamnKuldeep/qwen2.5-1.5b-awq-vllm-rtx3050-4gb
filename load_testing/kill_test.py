@@ -142,7 +142,7 @@ async def case_engine(args_kill_mode: str = "enginecore") -> None:
 
         gw = compose("ps", "--format", "{{.Service}} {{.Status}}").stdout.strip()
         codes = [c for c in results]
-        print(json.dumps({
+        emit({
             "crash_detected_after_seconds": round(crash_confirmed, 1) if crash_confirmed else None,
             "recovery_seconds": round(recovered_at, 1) if recovered_at else None,
             "container_restarts": compose(
@@ -158,7 +158,24 @@ async def case_engine(args_kill_mode: str = "enginecore") -> None:
             "requests_issued": len(codes),
             "accounting_drift": len(codes) - (after_rows - before_rows),
             "compose_ps": gw,
-        }, indent=2))
+        })
+
+
+OUT: str | None = None
+
+
+def emit(result: dict) -> None:
+    """Print the result, and keep it when --out was given.
+
+    Printed-only results were lost the moment the terminal scrolled, so the
+    results page could not cite the kill tests the way it cites everything
+    else. Saved as JSON they are evidence like any other run.
+    """
+    text = json.dumps(result, indent=2)
+    print(text)
+    if OUT:
+        with open(OUT, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text + "\n")
 
 
 async def case_gateway() -> None:
@@ -188,7 +205,7 @@ async def case_gateway() -> None:
         await asyncio.sleep(2.0)
         after_rows, after_tokens = ledger_totals()
         codes = [c for c in results]
-        print(json.dumps({
+        emit({
             "gateway_back_after_seconds": round(back, 1) if back else None,
             "request_outcomes": {str(k): codes.count(k) for k in set(codes)},
             "ledger_rows_before": before_rows,
@@ -196,7 +213,7 @@ async def case_gateway() -> None:
             "ledger_tokens_before": before_tokens,
             "ledger_tokens_after": after_tokens,
             "budgets_survived_restart": after_tokens >= before_tokens,
-        }, indent=2))
+        })
 
 
 def main() -> int:
@@ -205,7 +222,10 @@ def main() -> int:
     ap.add_argument("--kill-mode", choices=["enginecore", "container"], default="enginecore",
                     help="enginecore = realistic crash (restart policy applies); "
                          "container = operator kill (it does not)")
+    ap.add_argument("--out", default=None, help="also write the result JSON here")
     args = ap.parse_args()
+    global OUT
+    OUT = args.out
     asyncio.run(case_engine(args.kill_mode) if args.case == "engine" else case_gateway())
     return 0
 

@@ -1,0 +1,232 @@
+{
+  "config": {
+    "users": 10,
+    "pattern": "steady",
+    "turns": 6,
+    "think_mean": 12.0,
+    "think_sigma": 0.6,
+    "conversation_mix": "300,300,300,800,800,2000",
+    "duration": 120.0,
+    "max_tokens": 192,
+    "seed": 42,
+    "slo_ttft_ms": 1500.0,
+    "abusive_concurrency": 0,
+    "label": "evidence_capacity_10users"
+  },
+  "engine": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct-AWQ",
+    "max_model_len": 32768
+  },
+  "admission": {
+    "inflight": 0,
+    "waiting": 0,
+    "max_inflight": 10,
+    "max_queue": 12,
+    "max_inflight_per_key": 5,
+    "slots_used": 0,
+    "long_prompt_tokens": 2048,
+    "max_request_cost": 8,
+    "weighted_admissions": 6,
+    "active_keys": 0,
+    "current_share_per_key": 5,
+    "admitted_total": 246,
+    "rejected_total": {
+      "queue_timeout": 243
+    },
+    "peak_inflight": 10,
+    "peak_waiting": 11,
+    "mean_queue_wait_ms": 395.24
+  },
+  "totals": {
+    "turns_attempted": 57,
+    "turns_ok": 57,
+    "turns_shed_503": 0,
+    "turns_error": 0,
+    "shed_rate_pct": 0.0,
+    "output_tokens": 10944,
+    "output_tok_per_s": 91.6,
+    "mean_prompt_tokens": 978.8
+  },
+  "messages": {
+    "sent": 57,
+    "served_first_try": 57,
+    "served_after_retry": 0,
+    "unserved": 0,
+    "slo_attainment_pct": 100.0,
+    "goodput_per_s": 0.477
+  },
+  "ttft_ms_user_perceived": {
+    "p50": 166.1,
+    "p95": 853.9,
+    "p99": 871.0,
+    "max": 871.0
+  },
+  "per_user_perceived": {
+    "median_user_p95": 229.6,
+    "users_within_slo": 10,
+    "users_with_unserved_message": 0,
+    "users_total": 10
+  },
+  "ttft_ms_all_requests": {
+    "p50": 166.1,
+    "p95": 853.9,
+    "p99": 871.0,
+    "max": 871.0
+  },
+  "ttft_ms_per_user_p95": {
+    "median_user": 229.6,
+    "worst_user": 871.0,
+    "users_breaching_slo": 0,
+    "users_total": 10
+  },
+  "prefix_cache": {
+    "queries_delta": 55869.0,
+    "hits_delta": 44048.0,
+    "hit_rate_pct": 78.84,
+    "preemptions_delta": 0.0
+  },
+  "abusive": null,
+  "per_user": [
+    {
+      "user": 0,
+      "turns": 6,
+      "ok": 6,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 178.8,
+      "ttft_p95": 871.0,
+      "ttft_max": 871.0,
+      "mean_conversation_tokens": 1982.5,
+      "messages": 6,
+      "messages_within_slo": 6,
+      "perceived_p95": 871.0
+    },
+    {
+      "user": 1,
+      "turns": 6,
+      "ok": 6,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 106.3,
+      "ttft_p95": 189.7,
+      "ttft_max": 189.7,
+      "mean_conversation_tokens": 622.2,
+      "messages": 6,
+      "messages_within_slo": 6,
+      "perceived_p95": 189.7
+    },
+    {
+      "user": 2,
+      "turns": 6,
+      "ok": 6,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 126.1,
+      "ttft_p95": 214.4,
+      "ttft_max": 214.4,
+      "mean_conversation_tokens": 620.8,
+      "messages": 6,
+      "messages_within_slo": 6,
+      "perceived_p95": 214.4
+    },
+    {
+      "user": 3,
+      "turns": 6,
+      "ok": 6,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 201.2,
+      "ttft_p95": 853.9,
+      "ttft_max": 853.9,
+      "mean_conversation_tokens": 1980,
+      "messages": 6,
+      "messages_within_slo": 6,
+      "perceived_p95": 853.9
+    },
+    {
+      "user": 4,
+      "turns": 6,
+      "ok": 6,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 132.2,
+      "ttft_p95": 194.3,
+      "ttft_max": 194.3,
+      "mean_conversation_tokens": 622.3,
+      "messages": 6,
+      "messages_within_slo": 6,
+      "perceived_p95": 194.3
+    },
+    {
+      "user": 5,
+      "turns": 6,
+      "ok": 6,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 104.8,
+      "ttft_p95": 356.2,
+      "ttft_max": 356.2,
+      "mean_conversation_tokens": 618.2,
+      "messages": 6,
+      "messages_within_slo": 6,
+      "perceived_p95": 356.2
+    },
+    {
+      "user": 6,
+      "turns": 6,
+      "ok": 6,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 126.2,
+      "ttft_p95": 250.2,
+      "ttft_max": 250.2,
+      "mean_conversation_tokens": 621.8,
+      "messages": 6,
+      "messages_within_slo": 6,
+      "perceived_p95": 250.2
+    },
+    {
+      "user": 7,
+      "turns": 5,
+      "ok": 5,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 169.8,
+      "ttft_p95": 229.6,
+      "ttft_max": 229.6,
+      "mean_conversation_tokens": 515.8,
+      "messages": 5,
+      "messages_within_slo": 5,
+      "perceived_p95": 229.6
+    },
+    {
+      "user": 8,
+      "turns": 4,
+      "ok": 4,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 229.7,
+      "ttft_p95": 860.9,
+      "ttft_max": 860.9,
+      "mean_conversation_tokens": 1768.2,
+      "messages": 4,
+      "messages_within_slo": 4,
+      "perceived_p95": 860.9
+    },
+    {
+      "user": 9,
+      "turns": 6,
+      "ok": 6,
+      "shed": 0,
+      "errors": 0,
+      "ttft_p50": 132.8,
+      "ttft_p95": 166.5,
+      "ttft_max": 166.5,
+      "mean_conversation_tokens": 622.2,
+      "messages": 6,
+      "messages_within_slo": 6,
+      "perceived_p95": 166.5
+    }
+  ],
+  "turns": []
+}

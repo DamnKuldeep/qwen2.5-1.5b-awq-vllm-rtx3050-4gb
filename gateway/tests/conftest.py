@@ -60,6 +60,19 @@ def gateway(tmp_path, monkeypatch):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # vLLM's /tokenize, which the gateway calls only to confirm a suspected
+        # context overflow. Answered before anything is recorded so it cannot
+        # overwrite captured["body"] - the completion body tests assert on.
+        # Tokenisation density is set per test via captured["chars_per_token"],
+        # because the whole point of the exact count is that real density varies.
+        if request.url.path == "/tokenize":
+            captured["tokenize_calls"] = captured.get("tokenize_calls", 0) + 1
+            msgs = json.loads(request.content).get("messages", [])
+            chars = sum(len(m.get("content") or "") for m in msgs)
+            return httpx.Response(
+                200, json={"count": int(chars / captured.get("chars_per_token", 4.0))}
+            )
+
         # Record the path too: the gateway legitimately calls /v1/models to
         # discover the context window, so "did upstream get called at all" is
         # not the same question as "was the completion forwarded".

@@ -9,28 +9,40 @@ rising, with every user waiting and nobody served well. An unbounded queue
 converts "too much load" into "everyone gets a bad experience" instead of
 "some people get told to come back".
 
-The measured basis for the numbers here (Finalization Phases 2-3, 1.5B-AWQ):
+HOW MANY AT ONCE: 10, AND WHY IT WAS 6
+--------------------------------------
+The first limit came from `ramp.py`, which holds N requests in flight where
+EVERY request is a cold ~512-token prefill (Finalization Phases 2-3):
 
-    concurrency 4   p95 TTFT  696-928 ms    PASS, +38..54% margin
     concurrency 6   p95 TTFT 1005-1135 ms   PASS, +24..33% margin
-    concurrency 8   p95 TTFT 1401-1605 ms   marginal, -7..+7%
+    concurrency 8   p95 TTFT 1401-1605 ms   marginal
     concurrency 12  p95 TTFT     2043 ms    FAIL, -36%
 
-So six concurrent in-flight requests is the largest level that holds
-p95 TTFT < 1.5 s with margin outside the ~25% thermal noise band. That is
-MAX_INFLIGHT's default, and it is a measurement rather than a guess.
+That is the right ceiling for cold prompts, and the wrong one for chat. A chat
+turn resends its history, which the engine serves from the prefix cache
+(60-90% hit rate in every run), so each request needs a fraction of that
+prefill. Measured on the chat workload, clients retrying refusals, 1.0 s queue
+timeout (benchmarks/ablate_gateway.ps1):
 
-THE QUEUE IS DELIBERATELY SHALLOW, AND THE ARITHMETIC SAYS WHY
---------------------------------------------------------------
-A queued request's TTFT includes its queue wait. At concurrency 6 the service
-completes roughly 1.4 requests/second, so every extra queue slot adds ~0.7 s to
-the TTFT of whoever sits in it. Two slots of queue already consumes the entire
-1.5 s SLO budget.
+    limit   20 users: SLO attainment   40 users   admitted p95 at 40 users
+      6          85% / 92% (control)      44%          1,166 ms
+      8          95.5%                    61%          1,218 ms
+     10          99.1%                    61%          1,082 ms
 
-The honest consequence: **you cannot hold a tight TTFT SLO and also queue
-deeply.** The queue here exists to absorb sub-second arrival jitter, not to
-store backlog. Anything beyond it is refused immediately, which is the whole
-point - a fast, honest 503 is a better product than a 30-second success.
+Admitted latency did not degrade from 6 to 10: the slots were being refused
+for queueing, not because the engine was full. At 40 users 8 and 10 tie at
+~300 tok/s - that plateau is the GPU's real ceiling, and more slots would only
+add latency. Cold prompts are still charged by size (`cost_of`), which is what
+keeps a burst of them from reaching the regime the ramp measured.
+
+THE QUEUE IS DELIBERATELY SHALLOW, AND ITS TIMEOUT IS SET FROM THE USER'S SIDE
+------------------------------------------------------------------------------
+A queued request's TTFT includes its queue wait, so the queue exists to absorb
+arrival jitter, not to store backlog. The timeout was first set to 0.6 s from
+"worst admitted TTFT ~ timeout + engine TTFT". That arithmetic treats a refusal
+as free. It is not: the client retries after Retry-After (2 s), so a refused
+user waits longer than a queued one would have. Measured, 1.0 s beat 0.6 s at
+40 users (51% vs 35% attainment) while 2.0 s pushed ADMITTED p95 past the SLO.
 
 FAIRNESS — AND THE FIXED CAP THAT DID NOT WORK
 ----------------------------------------------
@@ -51,9 +63,9 @@ nobody else wants the capacity.
 
     limit = clamp(ceil(MAX_INFLIGHT / active_keys), 1, MAX_INFLIGHT_PER_KEY)
 
-With 1 active key it stays 3; with 7 it becomes 1. The abusive key's share
-falls from 50% of the service to 14% the moment other tenants show up, and
-rises back when they leave. This is the mechanism worst-case #2 tests.
+With 1 active key it stays at the cap (half the pool); with 11 it becomes 1.
+The abusive key's share falls from half the service to a tenth the moment
+other tenants show up, and rises back when they leave. This is the mechanism worst-case #2 tests.
 """
 
 from __future__ import annotations
@@ -78,16 +90,16 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-# Concurrent requests forwarded to the engine. Measured ceiling, see above.
-MAX_INFLIGHT = _int_env("GATEWAY_MAX_INFLIGHT", 6)
+# Concurrent requests forwarded to the engine. Measured on the chat workload, see above.
+MAX_INFLIGHT = _int_env("GATEWAY_MAX_INFLIGHT", 10)
 
 # Requests allowed to WAIT for a slot. Shallow on purpose - see the docstring.
 MAX_QUEUE = _int_env("GATEWAY_MAX_QUEUE", 12)
 
-# How long a request may wait before we give up and shed it. This is the term
-# that BOUNDS p95 TTFT under overload: worst-case TTFT is roughly
-# QUEUE_TIMEOUT + engine TTFT, and it does not grow with offered load.
-QUEUE_TIMEOUT_S = _float_env("GATEWAY_QUEUE_TIMEOUT_S", 2.0)
+# How long a request may wait before we give up and shed it. It bounds admitted
+# TTFT under overload (worst case ~ timeout + engine TTFT, independent of load),
+# and it is set from the user's side - see the docstring.
+QUEUE_TIMEOUT_S = _float_env("GATEWAY_QUEUE_TIMEOUT_S", 1.0)
 
 # Per-key share of the pool. Half, so one key can never starve the rest.
 MAX_INFLIGHT_PER_KEY = _int_env("GATEWAY_MAX_INFLIGHT_PER_KEY", max(1, MAX_INFLIGHT // 2))
@@ -106,7 +118,7 @@ RETRY_AFTER_S = _int_env("GATEWAY_RETRY_AFTER_S", 2)
 LONG_PROMPT_TOKENS = _int_env("GATEWAY_LONG_PROMPT_TOKENS", 2048)
 
 # Ceiling on one request's cost, so a giant prompt can never take the whole
-# pool. At 4 of 6 slots, two short requests can always still be served.
+# pool: two slots always remain for short requests (8 of 10 at the default).
 MAX_REQUEST_COST = _int_env("GATEWAY_MAX_REQUEST_COST", max(1, MAX_INFLIGHT - 2))
 
 

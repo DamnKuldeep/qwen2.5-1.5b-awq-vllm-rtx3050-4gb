@@ -45,6 +45,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.templating import Jinja2Templates
 
 from gateway import admission, context, db
+from gateway.prefix_tracker import PrefixTracker
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -67,7 +68,7 @@ FALLBACK_MAX_MODEL_LEN = int(os.getenv("GATEWAY_MAX_MODEL_LEN", "32768"))
 # ~30,000 tokens of generation - and a model that does not emit EOS will
 # deliver them, holding an admission slot for seven-plus minutes at ~14 ms per
 # token. The stream timeout would eventually cut it, mid-answer. An admission
-# limit of six slots whose hold time is unbounded is not a limit.
+# limit on slots whose hold time is unbounded is not a limit.
 #
 # So the gateway bounds it. The default is generous for chat (1,024 tokens is
 # roughly 750 words); the ceiling is what the chat UI's continuation logic
@@ -76,11 +77,30 @@ FALLBACK_MAX_MODEL_LEN = int(os.getenv("GATEWAY_MAX_MODEL_LEN", "32768"))
 DEFAULT_MAX_TOKENS = int(os.getenv("GATEWAY_DEFAULT_MAX_TOKENS", "1024"))
 MAX_OUTPUT_TOKENS = int(os.getenv("GATEWAY_MAX_OUTPUT_TOKENS", "2048"))
 
+# Request body ceiling. A full 32,768-token window is ~130-270 KB of text, and a
+# long conversation the gateway will trim is a few times that; 4 MiB is far
+# beyond any legitimate request. Without a ceiling the body is read into memory
+# whole, and a suspected context overflow is sent to the engine's tokenizer -
+# so a 100 MB body would cost gateway memory and engine CPU before being
+# refused anyway.
+MAX_REQUEST_BYTES = int(os.getenv("GATEWAY_MAX_REQUEST_BYTES", str(4 * 1024 * 1024)))
+
 # Generation can legitimately run long — the Stage 2 baseline measured P99
 # end-to-end latency of 8.96 s at concurrency 8. read=None disables the read
 # timeout so a slow-but-healthy generation is never killed mid-stream. Connect
 # and write stay bounded: a hang there means vLLM is unreachable, not busy.
 TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=10.0, pool=5.0)
+
+# Idle upstream connections are dropped after 2 s, safely inside vLLM's own
+# keep-alive (VLLM_HTTP_TIMEOUT_KEEP_ALIVE, 5 s). httpx's default expiry is ALSO
+# 5 s, so a connection idle for ~5 s can be reused at the instant the server
+# closes it, and that request fails with a dropped connection -> 502. The
+# evidence suite hit exactly one such 502, on the first request of a run that
+# started ~5 s after the previous run's connections went idle. The race is too
+# narrow to reproduce on demand, which is why the margin is structural rather
+# than a retry.
+UPSTREAM_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=20,
+                               keepalive_expiry=2.0)
 
 # Hop-by-hop headers are meaningful only for one connection and must not be
 # forwarded by a proxy (RFC 9110). Content-Length is stripped too — not
@@ -115,9 +135,11 @@ async def lifespan(app: FastAPI):
     # would open a fresh TCP connection every time and discard the pool; a
     # long-lived client keeps connections to vLLM warm, removing a handshake
     # from every request's TTFT.
-    app.state.client = httpx.AsyncClient(base_url=VLLM_BASE_URL, timeout=TIMEOUT)
+    app.state.client = httpx.AsyncClient(base_url=VLLM_BASE_URL, timeout=TIMEOUT,
+                                         limits=UPSTREAM_LIMITS)
     app.state.admission = admission.Admission()
     app.state.stats = admission.Stats()
+    app.state.prefix = PrefixTracker()
     app.state.max_model_len = None  # discovered lazily from the engine
     yield
     await app.state.client.aclose()
@@ -149,6 +171,30 @@ async def get_max_model_len(app: FastAPI) -> int:
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
         pass
     return FALLBACK_MAX_MODEL_LEN
+
+
+async def count_prompt_tokens(app: FastAPI, model, messages: list) -> int | None:
+    """Exact prompt-token count from the engine's own tokenizer, or None.
+
+    vLLM's /tokenize applies the served model's chat template and tokenizer on
+    the API server's CPU - no scheduler, no KV cache, no admission slot. It is
+    called only when the character pre-filter suspects an overflow, so the
+    common path pays nothing.
+
+    None means "could not count", and the caller then forwards rather than
+    refuses: a false 413 is a request the client cannot fix, whereas the
+    engine will still reject a genuine overflow with its own 400.
+    """
+    body = {"messages": messages, "add_generation_prompt": True}
+    if model:
+        body["model"] = model
+    try:
+        resp = await app.state.client.post("/tokenize", json=body, timeout=10.0)
+        if resp.status_code == 200:
+            return int(resp.json()["count"])
+    except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        pass
+    return None
 
 
 app = FastAPI(
@@ -494,7 +540,19 @@ async def chat_completions(request: Request):
     key_row = await authenticate(request)
     await enforce_budget(key_row, started)
 
-    raw_body = await request.body()
+    # Refuse on the declared length alone when it is present, without reading
+    # the body; check the real length too, since the header is optional.
+    declared = request.headers.get("content-length", "")
+    too_large = declared.isdigit() and int(declared) > MAX_REQUEST_BYTES
+    raw_body = b"" if too_large else await request.body()
+    if too_large or len(raw_body) > MAX_REQUEST_BYTES:
+        stats.record_status(413)
+        await record(key_row["key"], None, None, 413, False, started)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Request body exceeds {MAX_REQUEST_BYTES:,} bytes.",
+            headers=budget_headers(key_row),
+        )
 
     # Parse into an UNTYPED dict — see the module docstring. No schema means no
     # field can be dropped. If the body is not valid JSON we forward it
@@ -536,12 +594,16 @@ async def chat_completions(request: Request):
         # Refuse what cannot fit, before it costs a slot. Trimming preserves
         # system messages and the current question by policy, so a single
         # enormous message survives it untouched and would otherwise reach the
-        # engine only to come back as a 400 - having already occupied one of
-        # six slots. 413 is the honest status: the entity is too large, and no
-        # amount of retrying changes that.
-        oversized = context.definitely_exceeds_window(
-            payload["messages"], window, reply_budget
-        )
+        # engine only to come back as a 400 - having already occupied an
+        # admission slot. 413 is the honest status: the entity is too large,
+        # and no amount of retrying changes that.
+        oversized = None
+        if context.probably_exceeds_window(payload["messages"], window, reply_budget):
+            exact = await count_prompt_tokens(
+                request.app, model, context.undroppable(payload["messages"])
+            )
+            if exact is not None and exact + reply_budget > window:
+                oversized = exact
         if oversized is not None:
             stats.record_status(413)
             await record(key_row["key"], model, None, 413, is_stream, started)
@@ -549,7 +611,7 @@ async def chat_completions(request: Request):
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=(
                     f"This single message is too large for the model's context "
-                    f"window: at least ~{oversized:,} prompt tokens against a "
+                    f"window: {oversized:,} prompt tokens against a "
                     f"{window:,}-token window, with {reply_budget:,} reserved for "
                     f"the reply. Older turns are trimmed automatically, but the "
                     f"system prompt and your current message are never dropped - "
@@ -588,12 +650,20 @@ async def chat_completions(request: Request):
 
     # ---- Admission control -------------------------------------------------
     # The gateway, not the engine, is the limiter. --max-num-seqs is set well
-    # above this on purpose (32 against 6 here) so the engine's own cap can
+    # above this on purpose (32 against 10 here) so the engine's own cap can
     # never silently shape traffic the gateway believes it is controlling.
     # Weighted by predicted cost, not counted as one unit. The estimate comes
     # from the context policy, which has already walked the messages - so this
     # is free, and it is the same number the trim decision used.
-    cost = adm.cost_of(est_prompt_tokens)
+    #
+    # Charged on the UNCACHED part only. Turn 6 of a long conversation resends
+    # turns 1-5, which the engine serves from its prefix cache; charging the
+    # whole prompt refused ~90% of a long-conversation workload the GPU could
+    # have served. See gateway/prefix_tracker.py.
+    tracker: PrefixTracker = request.app.state.prefix
+    has_messages = parsed and isinstance(payload.get("messages"), list)
+    cached_est = tracker.cached_tokens(payload["messages"]) if has_messages else 0
+    cost = adm.cost_of(max(0, est_prompt_tokens - cached_est))
     try:
         queued_s = await adm.acquire(key_row["key"], cost)
     except admission.Rejected as rej:
@@ -608,6 +678,9 @@ async def chat_completions(request: Request):
                 **budget_headers(key_row),
             },
         )
+
+    if has_messages:
+        tracker.remember(payload["messages"], est_prompt_tokens)
 
     # release() must run exactly once, on every path: upstream failure, normal
     # completion, client disconnect, or stream timeout. A leaked slot is
@@ -643,6 +716,7 @@ async def chat_completions(request: Request):
     resp_headers.update(budget_headers(key_row))
     resp_headers["X-Queue-Wait-Ms"] = str(int(queued_s * 1000))
     resp_headers["X-Admission-Cost"] = str(cost)
+    resp_headers["X-Cached-Prefix-Estimate"] = str(cached_est)
     if trimmed_count:
         # Surfaced so a client can tell the difference between "the model
         # forgot" and "the gateway dropped the oldest turns to make it fit".

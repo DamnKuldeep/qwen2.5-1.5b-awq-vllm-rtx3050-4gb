@@ -109,32 +109,37 @@ services:
       - --max-num-seqs=${VLLM_MAX_NUM_SEQS:-32}
       - --max-num-batched-tokens=${VLLM_MAX_NUM_BATCHED_TOKENS:-2048}
       # ---------------------------------------------------------------------
-      # HEAD-OF-LINE BLOCKING: attempted here, and it does not work on this
-      # build. Left as a comment because the next person will try it too.
+      # HEAD-OF-LINE BLOCKING, and the flag that fixes it on this build.
       #
-      # Worst case #3 measured a single ~20k-token prompt pushing concurrent
-      # short requests from 82 ms to 12,201 ms of TTFT - a 148x degradation.
-      # Chunked prefill alone does not prevent that, which was the assumption
-      # going in and it was wrong. The cause is visible in SchedulerConfig:
-      # `max_num_partial_prefills = 1`, so only ONE request may be mid-prefill
-      # and every short request queues behind all ten chunks of the long one.
+      # A single ~20k-token prompt pushed concurrent short requests from ~100 ms
+      # to 11-13 s of TTFT. Chunked prefill alone does not prevent it: the V1
+      # scheduler serves RUNNING requests first, and a long prompt mid-prefill
+      # takes the whole 2,048-token step budget until it is done, so a new
+      # arrival gets nothing for ~10 s.
       #
-      # vLLM has exactly the right controls for this:
-      #   --max-num-partial-prefills=4
-      #   --max-long-partial-prefills=1
-      #   --long-prefill-token-threshold=2048
+      # --long-prefill-token-threshold caps one prefill's share of each step;
+      # the remainder goes to new arrivals' prefills and everyone's decode.
+      # Ablation (benchmarks/ablate_long_prefill.ps1, docs/RESULTS.md):
       #
-      # They are accepted, they log "Concurrent partial prefills enabled", and
-      # then the server dies on `assert envs.VLLM_USE_V1` in a crash loop -
-      # 79 restarts before it was caught. Setting max_num_partial_prefills > 1
-      # silently falls back to the V0 engine, and vLLM 0.11.0's OpenAI API
-      # server requires V1. A feature that configures cleanly and then makes
-      # the server unstartable is worse than one that refuses the flag.
+      #   threshold   short requests behind a 20k prompt   the 20k prompt itself
+      #   0 (default)     12,942 ms / 11,116 ms (control)      13.3 s / 11.4 s
+      #   1024               547 ms                            12.1 s
+      #   512                378 ms                            12.3 s
       #
-      # The mitigation is therefore in the GATEWAY instead: long prompts are
-      # weighted to consume several admission slots, which bounds how much of
-      # the service one giant prefill can occupy. See gateway/admission.py.
+      # Ordinary traffic, measured alongside, stayed inside the run-to-run
+      # spread: the two threshold-0 runs of 20-user chat gave 86.6% and 97.3%
+      # SLO attainment, 512 gave 90.4%, 1024 gave 97.3%. So the only effect
+      # larger than the noise is the one above. Prompts under the threshold
+      # are not touched at all.
+      #
+      # DO NOT add --max-num-partial-prefills > 1, which is the flag vLLM's docs
+      # pair with this one. It is accepted, logs "Concurrent partial prefills
+      # enabled", then falls back to the V0 engine, and vLLM 0.11.0's API server
+      # dies on `assert envs.VLLM_USE_V1` - 79 restarts before that was caught.
+      # This project wrote the problem off as unfixable for that reason; the
+      # threshold on its own was never the part that crashed.
       # ---------------------------------------------------------------------
+      - --long-prefill-token-threshold=${VLLM_LONG_PREFILL_THRESHOLD:-512}
       - --gpu-memory-utilization=0.78
       - --enable-prefix-caching
       - --swap-space=2

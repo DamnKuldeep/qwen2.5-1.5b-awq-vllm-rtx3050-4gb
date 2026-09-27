@@ -1902,3 +1902,73 @@ An admission limit whose per-slot hold time is unbounded is a limit on *count*, 
 README reoriented around the inference engineering: a decision → before → after table for every change that moved a number, and a "what watches it" section for the predictive signals and the failure matrix.
 
 **Status:** pushed
+
+---
+
+## Evidence suite — restarted after a mid-run power-mode change — 2026-09-27
+
+**What happened:** the full evidence suite was running when the laptop was switched to Windows' *Best performance* power mode. The three capacity levels already recorded looked wrong: **10 users shed 7% at p95 733 ms**, against an identical earlier run at **0% and 191 ms** — a 3.8x gap. Consistent with a system stall while the power mode changed, and a clear violation of "one variable at a time". All three files were discarded and the suite restarted from the heat soak.
+
+**Does *Best performance* change sustained behaviour? No — measured, not assumed.** A controlled 110-second load with one-second GPU sampling:
+
+| | Best performance (this session) | Earlier sessions |
+| --- | --- | --- |
+| Sustained SM clock | 1,117 MHz median | 950-1,450, depending on heat soak |
+| Dominant throttle reason | `0x20` SwThermalSlowdown, 49 of 73 samples | `0x20` |
+| Peak temperature | 87 C | 86-87 C |
+| Power draw | 31.7 W median, 44 W peak | 30-40 W |
+
+**The card was never power-limited under sustained load.** Median draw sits *below* the 35 W default limit and far under the 50 W maximum, while the thermal limit binds at 87 C. The Stage 2 fix — NVIDIA *Prefer maximum performance* — already holds the card in P0; the Windows slider has nothing left to unlock. On this machine the lever for more sustained throughput is **cooling**, not power settings. This is consistent with the core-clock-gating finding: decode tracks SM clock, and SM clock is set by die temperature.
+
+**Status:** evidence suite restarted
+
+---
+
+## Evidence suite — what the evidence run itself exposed — 2026-09-27
+
+The suite was meant to be a final measurement pass. It turned into the most productive bug hunt of the finalization, because it exercised every path at once and each finding had a number attached.
+
+**1. The power-mode explanation in the previous entry was wrong.** The 10-user anomaly (7% shed, p95 733 ms against an earlier 0% / 191 ms) reproduced in the clean restarted run: 3.5% shed, 713 ms. Nothing had stalled. The cause is statistical. A 120-second run at 10 users completes ~55 requests, and the nearest-rank p95 of 55 samples is the third-worst request, effectively the maximum. One unlucky request moves it by 500 ms. **Fixed in the reporting, not the service:** the SLO is now judged per user (each user's own p95, then the median and worst user), which is also what a person experiences. The pooled p95 is kept alongside for transparency.
+
+**2. Two Grafana panels were wrong, and only a rendered image showed it.**
+- *Errors* summed every HTTP status, so the abusive-client test drew ~10,000 "errors" that were admission control working as designed. 503 is now excluded; it has its own panel ("Why requests were shed").
+- *Engine concurrency and throughput* drew `running` (0–6) on the same axis as output tok/s (0–400), which flattened concurrency into a line on the floor. Throughput moved to a right axis.
+
+**3. Failure-matrix case 4 regressed: a long conversation got 413 instead of being trimmed.** The single-message guard added in the audit summed *every* message, so an ordinary long conversation, the exact case trimming exists for, was refused. It now counts only what trimming can never drop: system messages and the current one. Regression test added.
+
+**4. The same guard refused a prompt that fits.** It treated 4.5 characters per token as a safe lower bound, but plain English words measured **8.3 chars/token** on Qwen. A 20,448-token prompt looked like ~37,800 and got 413. No character ratio is a lower bound for BPE. The ratio is now only a pre-filter, and any refusal rests on an exact count from vLLM's `/tokenize` (CPU only; vLLM deliberately skips window validation for tokenize requests, verified in the source). A 4 MiB body ceiling was added so an absurd body is refused before it costs memory or tokenizer time. Tests: 36 passed.
+
+**5. Case 3 had been a false pass since that guard landed.** Its verdict looked only at the short requests. With the big prompt refused, the short requests got *faster* and the case reported PASS while no long prefill happened. This is the second false pass on this case (the first was the prefix-cache hit fixed with a nonce). The verdict now fails unless the big prompt is itself served.
+
+**6. With case 3 measuring honestly, head-of-line blocking was back: 79 ms → 10,055 ms** for short requests behind one 20k-token prompt. The long-standing verdict "engine fix exists but crash-loops this build" was only half right. The crash comes from `--max-num-partial-prefills > 1`, which forces V0. `--long-prefill-token-threshold` **on its own** is honoured by the V1 scheduler: it caps one prefill's share of each 2,048-token step, and the rest goes to new arrivals. First measurements: 1024 → short requests 596–698 ms during the big prefill; 512 → 224–336 ms. The big prompt's own TTFT is unchanged at ~10.5 s. Ablation on ordinary traffic below.
+
+**7. The load simulator shrank its own workload when it shed.** A refused turn was dropped and the user moved on to a follow-up. When the refused turn was the padded *opening* of a long conversation, the whole long context vanished for the rest of the session. So **a run that shed more carried a lighter workload and looked better for it.** It surfaced in the first ablation: same seed, but the arms ended up 20% apart in mean prompt size (668–697 vs 808 tokens), and per-user conversation sizes showed exactly the long-conversation users collapsing to ~900 tokens in the arms where their openings were shed. Fixed: a refused message is sent again after the server's `Retry-After` plus jitter, which is what a person does when the chat UI says "busy, retry after 2 s". **Every earlier simulator result carries this bias in the flattering direction,** so the ablation was discarded and the full evidence suite is re-run on the fixed simulator.
+
+**Also:** `kill_test.py` gained `--out`, so crash and restart results are saved as evidence instead of scrolling away. The suite now captures Grafana and a Prometheus session chart over the absolute window it ran in. `docs/RESULTS.md` is generated from the JSON by `benchmarks/build_results_page.py`.
+
+**Status:** simulator fixed; threshold ablation re-running
+
+---
+
+## Evidence suite, part 2 — measuring from the user's side, re-tuning, final evidence — 2026-09-27
+
+**The simulator now behaves like a client, and the headline metric changed with it.** After the retry fix, refusals stopped being free: a message refused once has already missed a 1.5 s target, because the retry comes at least 2 s later. `chat_sim.py` now records every attempt at a message and models an OpenAI-SDK-style client plus a person: two quick retries on `Retry-After`, then a think time, then the same message again. The headline is **SLO attainment**, the share of messages whose first token arrived within 1.5 s of the *first* send. Admitted-request latency is still reported, and on a short smoke run the two views diverged exactly as feared: admitted p95 684 ms and "0/20 users over SLO", against 86% attainment and 11/20 users actually within it.
+
+**Three gateway settings re-tuned from that side** (`benchmarks/ablate_gateway.ps1`):
+- **Queue timeout 0.6 → 1.0 s.** At 40 users 35% → 51% attainment; 2.0 s pushed admitted p95 past the SLO. At 20 users the arms were inside the noise (two 0.6 s runs: 51% and 84%).
+- **Admission limit 6 → 10.** 6 was measured with cold 512-token prompts; chat is mostly prefix-cache hits. Paired runs, 20 users: 85–92% → 99% attainment, admitted p95 no worse; 8 and 10 tie at 40 users near 300 tok/s.
+- **Admission cost on the uncached part of the prompt** (`gateway/prefix_tracker.py`). A hash chain over each forwarded prompt's messages lets the gateway charge a new turn only for what the previous turn did not already send.
+
+**The final evidence run** (`benchmarks/run_evidence_suite.ps1`, generated into `docs/RESULTS.md`): **10 users 100%, 20 users 97%, 25 users 67% / 78% (two runs), 30 users 64%, 40 users 35% (61% in the matching ablation arm), 60 users 24%**; control at 10 users 100%. 0 errors in any run, 0 preemptions, cache hit 63–95%. Failure matrix 8/8. Engine crash: detected 1.2 s, recovered 79.4 s, ledger drift 0 across 156 requests. Gateway restart: 4.8 s, budgets intact. Fairness: normal users 94% attainment with one key at 50 concurrent, 96.9% of its requests refused.
+
+**Two claims corrected by their own controls before they were published.**
+1. The threshold ablation's 20-user arms read 86.6% (threshold 0) → 90.4% (512), which I first wrote up as an improvement to ordinary traffic. The threshold-0 control then measured 97.3%. Every ordinary-traffic difference between thresholds is inside the spread; the only effect larger than the noise is head-of-line blocking (12,942 / 11,116 ms → 378 ms at 512).
+2. The 6 → 10 admission gain (85–92% → 99%) is from paired back-to-back runs. Later runs at 10 ranged 87–97%, so the documents now say the decision rests on the pairing, on admitted latency not worsening, and on why 6 was wrong for chat, not on a gap larger than the noise.
+
+**Operational findings on the way:**
+- **One 502 from the gateway's first upstream request after an idle gap.** It killed the suite's heat soak and first run. It matches the keep-alive race (vLLM's server keep-alive and httpx's pool expiry are both 5 s) but did not reproduce in 24 probes and three restart sequences. The upstream pool now expires idle connections at 2 s, and the simulator retries model discovery. Stated as likely, not proven.
+- **An ablation ran across an 8-hour laptop sleep** and produced a 408 ms "idle" and 202 ms "loaded" measurement, both meaningless. The benchmark scripts now hold `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` for their lifetime. The first version passed `0x80000001`, which Windows PowerShell 5.1 parses as a negative Int32, so the guard silently did nothing until it was written as `[uint32]2147483649`.
+- **`powershell -File` passes `-Values 6,8,10` as one string.** The gateway received `GATEWAY_MAX_INFLIGHT="6,8,10"`, failed to parse it, and silently fell back to the default. Caught by checking the container's environment before trusting the run; the script now splits its lists itself.
+- **The simulator's 8k-conversation workload is a real limit, not a gateway artefact.** Twenty users each opening with ~8k tokens need twenty cold, quadratic prefills, close to a minute of GPU time on their own: 21–29% attainment whatever the settings.
+
+**Status:** final evidence recorded; docs regenerated; ready to publish

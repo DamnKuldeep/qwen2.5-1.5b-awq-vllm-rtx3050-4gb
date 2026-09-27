@@ -139,28 +139,28 @@ services:
       # Every value here is a measurement, not a preference. See
       # gateway/admission.py and docs/CAPACITY_MODEL.md for the derivations.
 
-      # Concurrent requests forwarded to the engine. Measured ceiling: p95 TTFT
-      # holds under 1.5 s with +24..33% margin at 6, and fails by 36% at 12.
-      GATEWAY_MAX_INFLIGHT: ${GATEWAY_MAX_INFLIGHT:-6}
+      # Concurrent requests forwarded to the engine. Measured on the chat
+      # workload with retrying clients: 6 -> 10 took 20-user SLO attainment
+      # from 85-92% to 99% with no rise in admitted TTFT, because prefix-cache
+      # hits make each chat request far cheaper than the cold prompts the
+      # original ceiling of 6 was measured with. See gateway/admission.py.
+      GATEWAY_MAX_INFLIGHT: ${GATEWAY_MAX_INFLIGHT:-10}
 
-      # Waiting slots. Shallow on purpose: the service completes ~1.4 req/s at
-      # the concurrency limit, so each queue slot adds ~0.7 s to somebody's
-      # TTFT. This absorbs arrival jitter; it is not a backlog store.
+      # Waiting slots. Shallow on purpose: the queue absorbs arrival jitter,
+      # it is not a backlog store.
       GATEWAY_MAX_QUEUE: ${GATEWAY_MAX_QUEUE:-12}
 
-      # THE TERM THAT BOUNDS p95 TTFT UNDER OVERLOAD, and the one that has to
-      # be reconciled with the SLO rather than picked. Worst-case client TTFT
-      # is roughly this plus the engine's own TTFT. At 2.0 s, a queued request
-      # has already spent the entire 1.5 s budget before the engine starts, and
-      # a 30-user run measured p95 TTFT at 2,070 ms for exactly that reason.
-      # 0.6 s keeps the sum inside the SLO; the cost is a higher 503 rate,
-      # which is the correct trade - refusing work we cannot do well is the
-      # whole point of admission control.
-      GATEWAY_QUEUE_TIMEOUT_S: ${GATEWAY_QUEUE_TIMEOUT_S:-0.6}
+      # How long a request may wait for a slot before a 503. Bounds admitted
+      # TTFT (worst case ~ this + engine TTFT). 0.6 s was derived treating a
+      # refusal as free; clients retry after 2 s, so it is not. Measured: 1.0 s
+      # beat 0.6 s at 40 users (51% vs 35% SLO attainment), and 2.0 s pushed
+      # admitted p95 past the SLO.
+      GATEWAY_QUEUE_TIMEOUT_S: ${GATEWAY_QUEUE_TIMEOUT_S:-1.0}
 
-      # One key may hold at most half the pool, so a single abusive client
-      # cannot starve the rest. Worst case #2 tests this directly.
-      GATEWAY_MAX_INFLIGHT_PER_KEY: ${GATEWAY_MAX_INFLIGHT_PER_KEY:-3}
+      # Upper bound on one key's share - half the pool. The live share is
+      # ceil(limit / contending keys), so one abusive client cannot starve the
+      # rest. Worst case #2 tests this directly.
+      GATEWAY_MAX_INFLIGHT_PER_KEY: ${GATEWAY_MAX_INFLIGHT_PER_KEY:-5}
 
       # A stream outliving this is abandoned and its slot released, so a client
       # reading one byte per second cannot hold capacity indefinitely.
@@ -168,12 +168,17 @@ services:
 
       # Output bound. vLLM defaults an ABSENT max_tokens to the rest of the
       # context window - ~30,000 tokens on a 32k window - so a client that
-      # forgets the field can hold one of six slots for minutes. The gateway
+      # forgets the field can hold an admission slot for minutes. The gateway
       # injects the default when the field is missing and clamps anything
       # above the ceiling (reported in X-Max-Tokens-Clamped-From). At ~14 ms
       # per token at six concurrent, 2,048 tokens is a ~30 s worst-case hold.
       GATEWAY_DEFAULT_MAX_TOKENS: ${GATEWAY_DEFAULT_MAX_TOKENS:-1024}
       GATEWAY_MAX_OUTPUT_TOKENS: ${GATEWAY_MAX_OUTPUT_TOKENS:-2048}
+
+      # Request body ceiling (413 above it, before parsing). A full 32k-token
+      # window is well under 1 MB of text; this only stops absurd bodies from
+      # costing memory and engine tokenizer CPU on their way to a refusal.
+      GATEWAY_MAX_REQUEST_BYTES: ${GATEWAY_MAX_REQUEST_BYTES:-4194304}
 
     volumes:
       # Usage and budgets survive `docker compose down` and rebuilds. Without
@@ -225,11 +230,41 @@ services:
       # Anonymous admin access. Acceptable because this binds to localhost and
       # PRODUCT_SPEC scopes out authentication; it would need a real login
       # before facing a network.
+      # Server-side PNG rendering, used to capture the dashboard images in
+      # docs/img/. Harmless when the renderer is not running - Grafana simply
+      # returns its "renderer unavailable" placeholder and nothing else breaks.
+      GF_RENDERING_SERVER_URL: http://renderer:8081/render
+      GF_RENDERING_CALLBACK_URL: http://grafana:3000/
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
     depends_on:
       - prometheus
+
+  # ---------------------------------------------------------------------
+  # Grafana's headless-Chromium PNG renderer.
+  #
+  # BEHIND ITS OWN PROFILE ON PURPOSE. It is ~400 MB and exists only to
+  # capture the dashboard screenshots committed under docs/img/. Nobody
+  # running this stack to serve traffic should have to download it:
+  #
+  #   docker compose --profile observability --profile capture up -d
+  #
+  # Without it Grafana works normally in a browser; only /render returns a
+  # placeholder image.
+  # ---------------------------------------------------------------------
+  renderer:
+    image: grafana/grafana-image-renderer:3.11.6
+    container_name: grafana-renderer
+    profiles: [capture]
+    restart: unless-stopped
+    environment:
+      ENABLE_METRICS: "false"
+      # Headless Chromium otherwise reports Etc/Unknown, which Grafana's
+      # moment-timezone has no data for - it throws and every render comes
+      # back as the "renderer unavailable" placeholder.
+      TZ: UTC
+      BROWSER_TZ: UTC
 
 volumes:
   # EXTERNAL, and this matters. Compose normally prefixes volume names with the

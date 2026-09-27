@@ -1,0 +1,12 @@
+{
+  "gateway_back_after_seconds": 4.8,
+  "request_outcomes": {
+    "200": 4,
+    "RemoteProtocolError": 5
+  },
+  "ledger_rows_before": 54342,
+  "ledger_rows_after": 54346,
+  "ledger_tokens_before": 15732061,
+  "ledger_tokens_after": 15732585,
+  "budgets_survived_restart": true
+}

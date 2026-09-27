@@ -18,10 +18,22 @@ Built 2026-09-07/08 on a single RTX 3050 laptop GPU with 4 GiB of VRAM.
 > | Weights / KV cache | 1.9542 GiB / 28,480 tok | **1.1018 GiB / 69,760 tok** |
 > | Context window | 4,096 | **32,768** |
 > | `--max-num-seqs` | 8 | **32** |
-> | Limiter | none | **gateway: 6 in flight, 12 queued, 0.6 s timeout** |
+> | Scheduler | chunked prefill | **+ `--long-prefill-token-threshold 512`** |
+> | Limiter | none | **gateway: 10 in flight, 12 queued, 1.0 s timeout, cost on uncached tokens** |
 >
-> For the current picture start at [README.md](../README.md) and
-> [CAPACITY_MODEL.md](CAPACITY_MODEL.md). For what changed and why, section 12.
+> For the current picture start at [README.md](../README.md),
+> [RESULTS.md](RESULTS.md) and [CAPACITY_MODEL.md](CAPACITY_MODEL.md). For what
+> changed and why, section 12.
+>
+> **Revised after the evidence suite (2026-09-27).** Section 12 reports "6 in
+> flight, 0.6 s, ~22 users, 0 users over the SLO at every load". Those figures
+> came from a simulator that dropped refused messages instead of retrying them,
+> and from latency measured on admitted requests only. Re-measured from the
+> user's side, with retries counted, the gateway was re-tuned (6 → 10 in
+> flight, 0.6 → 1.0 s, cost on the uncached part of the prompt), head-of-line
+> blocking was fixed with one scheduler flag, and the capacity is **20 users at
+> 97% SLO attainment**. The reasoning is in DECISIONS.md ("Made during the
+> evidence suite") and PROGRESS_LOG.md.
 
 ---
 

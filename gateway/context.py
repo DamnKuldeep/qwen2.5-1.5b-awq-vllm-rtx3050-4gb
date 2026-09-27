@@ -59,12 +59,16 @@ CHARS_PER_TOKEN = 3.0
 # The OPPOSITE bias, and it exists for the opposite decision.
 #
 # Trimming uses the pessimistic ratio above, because trimming one turn early is
-# cheap. REFUSING uses this optimistic one, because refusing a request that
-# would actually have fit is a bug the client cannot work around. 4.5 chars per
-# token is beyond what Qwen achieves on ordinary prose, so anything this
-# estimate still calls oversized is oversized under any tokenisation.
+# cheap. Refusing a request that would actually have fit is a bug the client
+# cannot work around, so this optimistic ratio is only a PRE-FILTER: it decides
+# whether it is worth asking the engine's real tokenizer, and the refusal itself
+# is always made on the exact count (gateway/main.py).
 #
-# The asymmetry is the point: err toward trimming, err away from refusing.
+# It cannot be the final word. No character ratio is a lower bound for BPE: a
+# prompt of common English words measured 8.3 chars/token on Qwen, so ~20,000
+# real tokens looked like ~37,000 here and a prompt that fit was refused with
+# 413. The failure matrix caught it - case 3's big prompt silently stopped
+# being served.
 OPTIMISTIC_CHARS_PER_TOKEN = 4.5
 
 # Per-message chat-template overhead (role markers, delimiters). Qwen's template
@@ -157,15 +161,31 @@ def fit_messages(
     return kept, len(dropped), total
 
 
-def definitely_exceeds_window(
+def undroppable(messages: list) -> list:
+    """The messages trimming will never remove: system prompts and the last one.
+
+    The complement of `fit_messages`' droppable set. The oversize check counts
+    only these, because whatever trimming can remove is no reason to refuse.
+    """
+    if not isinstance(messages, list) or not messages:
+        return []
+    last_index = len(messages) - 1
+    return [
+        m for i, m in enumerate(messages)
+        if isinstance(m, dict) and (m.get("role") == "system" or i == last_index)
+    ]
+
+
+def probably_exceeds_window(
     messages: list,
     max_model_len: int,
     max_tokens: int,
 ) -> int | None:
-    """Optimistic token count, but only when the request cannot possibly fit.
+    """Optimistic token estimate of the undroppable messages, when it overflows.
 
-    Returns that count when even a generous tokenisation overflows the window,
-    and None otherwise.
+    Returns that estimate when it exceeds the window, and None otherwise. A
+    non-None result is a reason to COUNT EXACTLY, not a reason to refuse - see
+    OPTIMISTIC_CHARS_PER_TOKEN for why no character ratio can be trusted here.
 
     WHY THIS EXISTS. `fit_messages` cannot drop system messages or the final
     user message - dropping the question being asked is absurd, and the system
@@ -178,15 +198,20 @@ def definitely_exceeds_window(
     was "never a 400"; for multi-turn overflow that was true, and for this case
     it was not.
 
-    Catching it here turns an engine-side 400 into a gateway-side 413 that
-    names the limit, costs no GPU time, and holds no slot.
+    Catching it at the gateway turns an engine-side 400 into a 413 that names
+    the limit, costs no GPU time, and holds no slot.
+
+    ONLY THE UNDROPPABLE MESSAGES ARE COUNTED - the same set `fit_messages`
+    keeps. The first version counted every message, so an ordinary long
+    conversation (many turns, each small) was refused with 413 instead of
+    being trimmed. The failure matrix caught it: case 4 regressed from
+    "200, oldest turns dropped" to "413". Whatever trimming can remove is not
+    a reason to refuse.
     """
-    if not isinstance(messages, list) or not messages:
+    kept = undroppable(messages)
+    if not kept:
         return None
-    chars = 0
-    for m in messages:
-        if isinstance(m, dict):
-            chars += len(_content_text(m.get("content")))
+    chars = sum(len(_content_text(m.get("content"))) for m in kept)
     optimistic = int(chars / OPTIMISTIC_CHARS_PER_TOKEN) + TEMPLATE_OVERHEAD
     budget = max_model_len - max(0, max_tokens)
     return optimistic if optimistic > budget else None

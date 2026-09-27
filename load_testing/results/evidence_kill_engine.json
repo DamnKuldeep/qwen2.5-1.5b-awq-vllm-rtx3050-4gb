@@ -1,0 +1,22 @@
+{
+  "crash_detected_after_seconds": 1.2,
+  "recovery_seconds": 79.4,
+  "container_restarts": "1",
+  "gateway_health_codes_during_outage": [
+    200
+  ],
+  "gateway_ready_codes_during_outage": [
+    200,
+    503
+  ],
+  "request_outcomes": {
+    "200": 4,
+    "500": 3,
+    "502": 149
+  },
+  "ledger_rows_added": 156,
+  "ledger_tokens_added": 395,
+  "requests_issued": 156,
+  "accounting_drift": 0,
+  "compose_ps": "gateway Up 37 minutes (healthy)\ngrafana Up 4 hours\nrenderer Up 4 hours\nprometheus Up 4 hours\nvllm Up About a minute (healthy)"
+}

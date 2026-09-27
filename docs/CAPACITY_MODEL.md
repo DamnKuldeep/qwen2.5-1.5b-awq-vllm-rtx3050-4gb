@@ -6,6 +6,13 @@ Everything below is derived from measurements on one machine — a laptop RTX
 3050 with 4 GiB of VRAM — and every number states how it was obtained. Where a
 figure is inherited from an earlier stage rather than re-measured, it says so.
 
+> **Current numbers live in [RESULTS.md](RESULTS.md)**, which is generated from
+> the result files and cannot drift from them. This document explains *why*
+> the numbers are what they are. The short version of the current state:
+> **20 concurrent chat users with ≥90% of messages getting a first token within
+> 1.5 s of first send, retries included** (97% measured); the knee is sharp, and
+> 25 users measured 67–78%.
+
 ---
 
 ## 1. The facts the model is built on
@@ -18,20 +25,21 @@ All measured, none assumed.
 | KV cache | **69,760 tokens** | vLLM startup log |
 | KV per token | **28.0 KiB** | `2 × 28 layers × 2 kv_heads × 128 head_dim × 2 bytes`, from `config.json` — and it back-solves exactly from the cache size |
 | Context window | **32,768** | model's `max_position_embeddings`, `rope_scaling: null` so it is a hard ceiling |
-| Concurrency at SLO | **6 requests** | `ramp.py`, p95 TTFT 1,005–1,135 ms with +24…33% margin, on a card at its normal warm idle (~69 °C) |
-| Concurrency at SLO, deep heat-soak | **4 requests** | Same ramp with the card idling at ~78 °C beforehand: 6 fails by 7%. This is the thermal range, not measurement noise — see §6 |
-| Concurrency that fails | **12 requests** | p95 TTFT 2,043 ms, −36% margin |
-
-**To be unambiguous about which number is shipped:** the gateway admits **6**.
-That holds the SLO with margin in the thermal state a laptop reaches after a
-few minutes of use. After an hour of sustained load the same command measures
-a ceiling of 4, and the 6-slot limit will then let p95 drift ~7% over target
-before shedding catches it. The honest product statement is "6, degrading to 4
-when the chassis is saturated" — and the alert on sustained throughput below
-floor (`ThroughputBelowThermalFloor`) is what would tell an operator which
-state they are in.
+| Concurrency at SLO, **cold prompts** | **6 requests** | `ramp.py`, every request a cold ~512-token prefill: p95 TTFT 1,005–1,135 ms with +24…33% margin (~69 °C idle) |
+| Concurrency at SLO, cold prompts, deep heat-soak | **4 requests** | Same ramp with the card idling at ~78 °C beforehand: 6 fails by 7%. This is the thermal range, not measurement noise — see §6 |
+| Concurrency that fails, cold prompts | **12 requests** | p95 TTFT 2,043 ms, −36% margin |
+| Concurrency at SLO, **chat** | **10 requests** | `chat_sim.py` with retrying clients: paired back-to-back runs, 20-user SLO attainment 85–92% at 6 → 95.5% at 8 → 99% at 10 (later runs at 10 ranged 87–97%), admitted p95 no worse; throughput plateaus near 300 tok/s at 8–10 (`benchmarks/ablate_gateway.ps1`) |
 | Prefill rate | **≈3,070 tok/s** linear term | fitted across 471 / 6,774 / 22,586-token prompts |
 | Decode | **13–19 ms/token** | varies with sustained SM clock, see §6 |
+
+**To be unambiguous about which number is shipped:** the gateway admits **10**.
+The ramp's 6 is the right ceiling when every request is a cold prefill, and
+the wrong one for chat, where each turn resends history the engine serves from
+its prefix cache (60–90% hit rate in every run). Cold prompts are still
+charged by their uncached size (`1 + uncached_tokens / 2,048` slots), which is
+what keeps a burst of them inside the regime the ramp measured. Thermal state
+still moves every number here (§6); the `ThroughputBelowThermalFloor` alert is
+what tells an operator which state they are in.
 
 ### The context window costs nothing, and that is not obvious
 
@@ -131,34 +139,44 @@ duty cycle      = service_time / (service_time + think_time)
 users supported = concurrency_limit / duty_cycle × utilisation_target
 ```
 
-With a measured service time of ~3 s per turn and a concurrency limit of 6:
+With ~4 s of service per turn under load (192 tokens at ~20 ms) and 10 slots,
+12 s of think time gives a 25% duty cycle, so 10 slots would be fully busy at
+~40 users. **The measured capacity is 20** — half that — and the gap is the
+lesson of this section.
 
-| think time | duty cycle | users at 100% | users at ~75% (usable) |
-| ---: | ---: | ---: | ---: |
-| 12 s | 20% | 30 | **~22** |
-| 30 s | 9.1% | 66 | **~49** |
-| 45 s | 6.3% | 96 | **~72** |
+The earlier version of this model said "~22 users at 75% utilisation" with 6
+slots, and a simulator that never retried seemed to confirm it. Both were
+optimistic for the same reason: they treated arrivals as smooth. Chat arrivals
+are bursty (Poisson), and with a tight queue budget (1.0 s) what matters is
+the chance that a new message finds every slot busy. By Erlang C that chance
+climbs steeply long before 100% utilisation. A refused user also comes back
+2–3 s later, adding load at exactly the wrong moment. Measured with retrying
+clients: 20 users kept 97% of messages inside the SLO, 25 users 67–78%.
 
-The 75% figure is not arbitrary: queueing delay grows without bound as
-utilisation approaches 1, and the queue timeout converts that delay into 503s.
-Running a latency-sensitive service above ~75% utilisation trades a large
-amount of tail latency for a small amount of throughput.
+Scaling that measured anchor by duty cycle (an extrapolation, not a
+measurement):
+
+| think time | duty cycle | users at ≥90% attainment |
+| ---: | ---: | ---: |
+| 12 s | 25% | **20** (measured) |
+| 30 s | 12% | ~40 |
+| 45 s | 8% | ~55 |
 
 **This is why "how many users" has no single answer.** It is a function of think
 time, and think time is a property of the product, not the hardware.
 
 ### Output length is the other half of the duty cycle
 
-Service time is mostly decode — ~14 ms per output token at six concurrent —
+Service time is mostly decode (~20 ms per output token at ten concurrent),
 so the reply length the product allows moves capacity as much as think time
-does. Holding think time at 12 s:
+does. Holding think time at 12 s and scaling the measured anchor by duty cycle:
 
-| reply length | service time | duty cycle | usable users |
+| reply length | service time | duty cycle | users at ≥90% attainment |
 | ---: | ---: | ---: | ---: |
-| 192 tokens *(measured)* | ~3.0 s | 20% | **~22** |
-| 512 tokens | ~7.5 s | 38% | ~12 |
-| 1,024 tokens *(gateway default)* | ~14.6 s | 55% | ~8 |
-| 2,048 tokens *(gateway ceiling)* | ~29 s | 71% | ~6 |
+| 192 tokens *(measured)* | ~4 s | 25% | **20** |
+| 512 tokens | ~10 s | 46% | ~11 |
+| 1,024 tokens *(gateway default)* | ~20 s | 63% | ~8 |
+| 2,048 tokens *(gateway ceiling)* | ~41 s | 77% | ~6 |
 
 Two consequences that were not obvious before this table existed:
 
@@ -171,14 +189,16 @@ Two consequences that were not obvious before this table existed:
    window, ~30,000 tokens. A model that does not emit EOS holds a slot for
    seven minutes. The gateway therefore injects a default (1,024) when the
    field is missing and clamps anything above a ceiling (2,048), reporting
-   the clamp in `X-Max-Tokens-Clamped-From`. Without that bound the "6 in
+   the clamp in `X-Max-Tokens-Clamped-From`. Without that bound the "10 in
    flight" limit is a limit on *count*, not on *work*, and the capacity
    arithmetic above does not hold.
 
 There is no priority or preemption for long generations. Continuous batching
 gives every running sequence one token per scheduler step, and a sequence
-holds its admission slot for the whole stream. What *can* starve others is a
-long **prefill** (case 3 in [FAILURE_MATRIX.md](FAILURE_MATRIX.md)), which is a different mechanism.
+holds its admission slot for the whole stream. What *could* starve others is a
+long **prefill**: one 20k-token prompt held every short request for 11–13 s until
+`--long-prefill-token-threshold=512` capped its share of each scheduler step
+(now 0.4–0.6 s; case 3 in [FAILURE_MATRIX.md](FAILURE_MATRIX.md)).
 
 ---
 
@@ -212,11 +232,11 @@ admission binds when:  users > concurrency_limit / duty_cycle
 cache binds when:      users > 69,760 / conversation_length
 ```
 
-At 12 s think time and ~1,000-token conversations: admission binds at ~22
+At 12 s think time and ~1,000-token conversations: admission binds at ~20
 users, cache at ~70. **Admission binds first, by 3x.**
 
-At 45 s think time and 4,000-token conversations: admission binds at ~72 users,
-cache at ~17. **Cache binds first, by 4x.**
+At 45 s think time and 4,000-token conversations: admission binds at ~55 users,
+cache at ~17. **Cache binds first, by 3x.**
 
 This is the single most important structural result here, and it was not
 obvious in advance: **the binding constraint changes identity depending on how
@@ -264,6 +284,17 @@ holds across models at comparable thermal state; it is a special case of
 
 ## 7. The measured curve
 
+**The current curve is in [RESULTS.md §1](RESULTS.md#1-capacity)**: SLO
+attainment measured from each message's first send, with clients that retry a
+503. The tables in 7.1–7.4 below are kept because the reasoning in them still
+holds, but **their numbers are superseded**. They were measured with a
+simulator that dropped a refused message instead of retrying it, which deleted
+the long context of any conversation whose opening was refused (so heavier
+shedding produced a lighter workload), and they judged latency on admitted
+requests only. "0 users over the SLO" in those tables is true of admitted
+requests and says nothing about the refused ones. What changed and why is in
+[DECISIONS.md](../DECISIONS.md) under "Made during the evidence suite".
+
 All runs: `chat_sim.py`, Poisson arrivals, log-normal think time (median 12 s),
 6-turn conversations that accumulate context, fixed seed 42, 120 s, discarded
 warm-up, heat-soaked card. Engine config embedded in every result file.
@@ -283,7 +314,7 @@ The same sweep run twice, changing one variable: `GATEWAY_QUEUE_TIMEOUT_S`.
 | 40 | 22.5 | **2,071 ms** | 2,211 ms | 32/40 | 88.1% |
 | 60 | 47.1 | **2,116 ms** | 2,417 ms | 49/58 | 83.9% |
 
-**Queue timeout 0.6 s (shipped):**
+**Queue timeout 0.6 s (shipped until the evidence suite; now 1.0 s, see below):**
 
 | users | shed % | p95 TTFT | worst user p95 | users over SLO | cache hit |
 | ---: | ---: | ---: | ---: | :---: | ---: |
@@ -319,6 +350,13 @@ the SLO** — for **10 percentage points more shedding** (47.1% → 56.9%).
 > in ten more, so that every request you *do* accept is served within its
 > latency target. A 503 the client can retry is a better product than a
 > success nobody wanted to wait for.
+>
+> **Later correction.** The arithmetic above is right for admitted requests
+> and wrong for users, because it treats a refusal as free. A client retries
+> after `Retry-After: 2`, so a refused message waits at least 2 s: longer than
+> a slightly longer queue wait would have been. Re-measured with retrying
+> clients, 1.0 s beat 0.6 s at 40 users (51% vs 35% SLO attainment), and 2.0 s
+> pushed admitted p95 past the SLO. 1.0 s is shipped. See RESULTS.md §5b.
 
 ### 7.2 The prefix-cache knee: predicted, and it did not appear
 
@@ -365,7 +403,8 @@ Long conversations *do* destroy the tail — worst-user p95 goes from 916 ms to
 So the honest revision to the capacity model: **on this hardware the cache knee
 is unreachable while admission control is doing its job.** The 6x uncertainty
 this project set out to resolve — ~17 users if cache-bound, ~110 if
-compute-bound — resolves to **~22 users, admission-bound**, and the cache is not
+compute-bound — resolves to **admission-bound** (then ~22 users by the old
+metric, now 20 at ≥90% attainment with retrying clients), and the cache is not
 the binding constraint in any regime we can actually reach.
 
 *Caveat, stated because it cuts against the result:* prefix-cache counters are

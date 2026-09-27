@@ -103,7 +103,8 @@ async def case_long_prompt_isolation(client: httpx.AsyncClient) -> None:
     not stall for the ~20 s the big prefill takes."""
     model = await model_id(client)
 
-    # ~26k tokens: large, and safely inside the 32,768 window with room to reply.
+    # ~20k tokens (measured: these words tokenise at ~8.3 chars/token on Qwen):
+    # large, and safely inside the 32,768 window with room to reply.
     #
     # THE NONCE IS LOAD-BEARING, and its absence produced a false PASS.
     # The prompt used to be a fixed string, so the second run of this case hit
@@ -144,11 +145,20 @@ async def case_long_prompt_isolation(client: httpx.AsyncClient) -> None:
     p95_base = round(statistics.quantiles(baseline, n=20)[-1], 1) if len(baseline) > 1 else baseline[0]
     p95_during = round(max(during), 1) if during else None
 
-    verdict = "PASS" if during and max(during) < 10_000 else "FINDING"
+    # The big prompt must itself be SERVED. The first version of this verdict
+    # looked only at the short requests, so when a faulty 413 guard started
+    # refusing the big prompt, the short requests got faster and the case kept
+    # reporting PASS while no long prefill happened at all.
+    big_served = big_result["status"] == 200 and big_result.get("usage")
+    if not big_served:
+        verdict = "FAIL"
+    else:
+        verdict = "PASS" if during and max(during) < 10_000 else "FINDING"
     report(
-        "3. Single ~26k-token prompt alongside normal traffic",
+        "3. Single ~20k-token prompt alongside normal traffic",
         "short requests keep flowing; their TTFT rises but stays in low seconds",
-        f"big prompt {big_result['usage']['prompt_tokens'] if big_result.get('usage') else '?'} tok, "
+        f"big prompt HTTP {big_result['status']}, "
+        f"{big_result['usage']['prompt_tokens'] if big_result.get('usage') else '?'} tok, "
         f"TTFT {big_result['ttft_ms']} ms; small requests p95 TTFT "
         f"{p95_base} ms alone -> {p95_during} ms during; {shed} shed",
         verdict,
@@ -465,7 +475,9 @@ async def case_overload_shedding(client: httpx.AsyncClient) -> None:
     """EXPECTED: at ~10x the admission limit, p95 TTFT stays BOUNDED and the
     excess is refused with 503 + Retry-After rather than queued."""
     model = await model_id(client)
-    n = 60
+    # Sized from the LIVE limit, so "10x" stays true when the limit changes.
+    limit = (await client.get(f"{GATEWAY}/admission")).json()["max_inflight"]
+    n = 10 * limit
     tasks = [stream_turn(client, model,
                          [{"role": "user", "content": f"Explain indexing. #{i}"}],
                          key=f"dev-user-{i % 48:02d}", max_tokens=64)
@@ -479,12 +491,12 @@ async def case_overload_shedding(client: httpx.AsyncClient) -> None:
 
     verdict = "PASS" if shed and p95 and p95 < 5000 else "FINDING"
     report(
-        "1. Burst 10x over admission limit (60 simultaneous)",
+        f"1. Burst 10x over admission limit ({n} simultaneous)",
         "p95 TTFT bounded; excess refused with 503 + Retry-After, not queued",
         f"{len(ok)} served, {len(shed)} shed (Retry-After: {retry_after}); "
         f"served p95 TTFT {p95} ms",
         verdict,
-        f"admission limit is 6 in flight, so this is 10x offered load",
+        f"admission limit is {limit} in flight, so this is 10x offered load",
     )
 
 

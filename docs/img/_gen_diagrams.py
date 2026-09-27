@@ -126,8 +126,8 @@ def diagram_lifecycle(t):
     s.append(text(48, ey + 26, "vLLM  ·  Qwen2.5-1.5B-Instruct-AWQ", t["gpu"], 13.5, 650))
     s.append(text(48, ey + 47, "continuous batching  ·  paged KV, 16-token blocks  ·  prefix cache",
                   t["dim"], 11.5))
-    s.append(text(48, ey + 70, "at most 6 requests decoding at once", t["ink"], 12, 600))
-    s.append(text(48 + 214, ey + 70, "— the gateway's limit, not the engine's",
+    s.append(text(48, ey + 70, "at most 10 requests decoding at once", t["ink"], 12, 600))
+    s.append(text(48 + 222, ey + 70, "— the gateway's limit, not the engine's",
                   t["faint"], 11.5))
 
     # pool bar showing KV usage
@@ -159,99 +159,123 @@ def diagram_lifecycle(t):
 # ---------------------------------------------------------------------------
 
 def load_curve():
-    """(users, p95_ms, shed_pct, over_slo) for the shipped queue-timeout config."""
+    """Per-level results from the heat-soaked, control-validated evidence sweep.
+
+    Returns dicts with users, attainment, first-try share, users within SLO,
+    admitted p95 and user-perceived p95.
+
+    WHY SLO ATTAINMENT AND NOT p95 OF ADMITTED REQUESTS. Latency measured only
+    on requests the gateway admitted is the engine's view: a gateway that
+    refused everyone would score perfectly. Clients retry a 503, so every
+    refusal costs its user at least the Retry-After wait. Attainment counts a
+    message as good only if its first token arrived within the SLO of its FIRST
+    send, retries included - the user's view.
+    """
     pts = []
-    for name, users in [("baseline_10users_qt06", 10), ("qt06_capacity_20users", 20),
-                        ("qt06_capacity_30users", 30), ("qt06_capacity_40users", 40),
-                        ("qt06_capacity_60users", 60)]:
-        f = RESULTS / f"{name}.json"
+    for users in (10, 20, 25, 30, 40, 60):
+        f = RESULTS / f"evidence_capacity_{users}users.json"
         if not f.exists():
             continue
         d = json.loads(f.read_text(encoding="utf-8"))
-        pts.append((users,
-                    d["ttft_ms_all_requests"]["p95"],
-                    d["totals"]["shed_rate_pct"],
-                    d["ttft_ms_per_user_p95"]["users_breaching_slo"],
-                    d["ttft_ms_per_user_p95"]["users_total"]))
+        m, pp = d["messages"], d["per_user_perceived"]
+        pts.append(dict(
+            users=users,
+            attain=m["slo_attainment_pct"],
+            first=100 * m["served_first_try"] / max(1, m["sent"]),
+            within=pp["users_within_slo"], total=pp["users_total"],
+            admitted_p95=d["ttft_ms_all_requests"]["p95"],
+            user_p95=d["ttft_ms_user_perceived"]["p95"],
+        ))
     return pts
 
 
 def diagram_degradation(t):
     pts = load_curve()
-    W, H = 900, 480
-    L, R, TOP, BOT = 74, 700, 92, 372          # plot box
-    SLO = 1500
-    YMAX = 1700
+    W, H = 900, 500
+    L, R, TOP, BOT = 74, 640, 92, 372
     s = [svg_open(W, H, t)]
+    if not pts:
+        s.append(text(28, 34, "No evidence runs found", t["ink"], 17, 650))
+        s.append("</svg>")
+        return "".join(s)
 
-    s.append(text(28, 34, "Offered load rises 6x. Latency does not.", t["ink"], 17, 650))
+    ok90 = [p["users"] for p in pts if p["attain"] >= 90]
+    head = (f"Up to {max(ok90)} users, 9 in 10 messages start within 1.5 s, retries included."
+            if ok90 else "Share of messages that started within 1.5 s, retries included.")
+    s.append(text(28, 34, head, t["ink"], 17, 650))
     s.append(text(28, 55,
-                  "p95 time-to-first-token, as the client sees it (queue wait included). "
-                  "Excess load is refused, not queued.", t["dim"], 12.5))
+                  "Measured from each message's FIRST send: a refused message is retried, "
+                  "and the wait counts against it.", t["dim"], 12.5))
 
-    def px(u):   return L + (u - 10) / 50 * (R - L)
-    def py(ms):  return BOT - (ms / YMAX) * (BOT - TOP)
+    # Evenly spaced levels, not a proportional axis: 20/25/30 would otherwise
+    # sit on top of each other exactly where the knee is.
+    idx = {p["users"]: i for i, p in enumerate(pts)}
 
-    # y gridlines
-    for ms in (0, 500, 1000, 1500):
-        y = py(ms)
-        s.append(f'<line x1="{L}" y1="{y:.1f}" x2="{R}" y2="{y:.1f}" stroke="{t["line"]}" '
-                 f'stroke-width="1"{" stroke-dasharray=\'4 4\'" if ms else ""}/>')
-        s.append(text(L - 12, y + 4, f"{ms:,}", t["faint"], 11, 400, "end", MONO))
-    s.append(text(L - 12, py(YMAX) + 4, "ms", t["faint"], 11, 400, "end"))
+    def px(u):  return L + 20 + idx[u] / max(1, len(pts) - 1) * (R - L - 40)
+    def py(v):  return BOT - (v / 100) * (BOT - TOP)
 
-    # SLO band
-    s.append(rect(L, TOP, R - L, py(SLO) - TOP, t["bad"], None, 0))
-    s.append(f'<rect x="{L}" y="{TOP}" width="{R-L}" height="{py(SLO)-TOP:.1f}" '
-             f'fill="{t["bad"]}" opacity="0.06"/>')
-    s.append(f'<line x1="{L}" y1="{py(SLO):.1f}" x2="{R}" y2="{py(SLO):.1f}" '
-             f'stroke="{t["bad"]}" stroke-width="1.6" stroke-dasharray="6 4"/>')
-    s.append(text(R - 6, py(SLO) - 9, "SLO  p95 < 1,500 ms", t["bad"], 11.5, 600, "end"))
+    for v in (0, 25, 50, 75, 90, 100):
+        y = py(v)
+        dash = ' stroke-dasharray="4 4"' if v else ""
+        col = t["good"] if v == 90 else t["line"]
+        s.append(f'<line x1="{L}" y1="{y:.1f}" x2="{R}" y2="{y:.1f}" stroke="{col}" '
+                 f'stroke-width="{1.4 if v == 90 else 1}"{dash}/>')
+        s.append(text(L - 12, y + 4, f"{v}%", t["faint"], 11, 400, "end", MONO))
+    s.append(text(R - 6, py(90) - 8, "90% attainment target", t["good"], 11, 600, "end"))
 
-    # the measured line
-    poly = " ".join(f"{px(u):.1f},{py(p):.1f}" for u, p, *_ in pts)
-    s.append(f'<polyline points="{poly}" fill="none" stroke="{t["good"]}" stroke-width="2.6" '
+    first = " ".join(f"{px(p['users']):.1f},{py(p['first']):.1f}" for p in pts)
+    att = " ".join(f"{px(p['users']):.1f},{py(p['attain']):.1f}" for p in pts)
+    s.append(f'<polyline points="{first}" fill="none" stroke="{t["accent"]}" '
+             f'stroke-width="1.8" stroke-dasharray="5 4"/>')
+    s.append(f'<polyline points="{att}" fill="none" stroke="{t["good"]}" stroke-width="2.8" '
              f'stroke-linejoin="round" stroke-linecap="round"/>')
-    area = f"{L},{BOT} " + poly + f" {px(pts[-1][0]):.1f},{BOT}"
-    s.append(f'<polygon points="{area}" fill="{t["good"]}" opacity="0.09"/>')
 
-    for u, p, shed, over, total in pts:
-        x, y = px(u), py(p)
-        s.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="{t["bg"]}" '
+    for p in pts:
+        x = px(p["users"])
+        s.append(f'<circle cx="{x:.1f}" cy="{py(p["first"]):.1f}" r="3.5" fill="{t["accent"]}"/>')
+        s.append(f'<circle cx="{x:.1f}" cy="{py(p["attain"]):.1f}" r="5" fill="{t["bg"]}" '
                  f'stroke="{t["good"]}" stroke-width="2.4"/>')
-        s.append(text(x, y - 15, f"{p:.0f}", t["good"], 12, 650, "middle", MONO))
-        s.append(text(x, BOT + 22, str(u), t["ink"], 12.5, 600, "middle", MONO))
-        s.append(text(x, BOT + 40, f"{shed:.0f}% shed", t["faint"], 10.5, 400, "middle"))
-        s.append(text(x, BOT + 56, f"{over}/{total} over", t["good"] if over == 0 else t["bad"],
-                      10.5, 600, "middle"))
-    s.append(text((L + R) / 2, BOT + 82, "simulated concurrent users", t["dim"], 12, 500, "middle"))
-
-    # axes
+        # Label on whichever side of the point is away from the dashed line.
+        below = p["attain"] < p["first"] - 1
+        s.append(text(x, py(p["attain"]) + (20 if below else -12), f"{p['attain']:.0f}%",
+                      t["good"], 11.5, 650, "middle", MONO))
+        s.append(text(x, BOT + 22, str(p["users"]), t["ink"], 12.5, 600, "middle", MONO))
+        s.append(text(x, BOT + 40, f"{p['within']}/{p['total']} users ok",
+                      t["good"] if p["within"] == p["total"] else t["dim"], 10.5, 500, "middle"))
+    s.append(text((L + R) / 2, BOT + 66, "simulated chat users", t["dim"], 12, 500, "middle"))
     s.append(f'<line x1="{L}" y1="{TOP}" x2="{L}" y2="{BOT}" stroke="{t["line"]}" stroke-width="1.4"/>')
     s.append(f'<line x1="{L}" y1="{BOT}" x2="{R}" y2="{BOT}" stroke="{t["line"]}" stroke-width="1.4"/>')
 
-    # side panel: the tuning result
-    PX = R + 32
-    s.append(rect(PX, TOP, W - PX - 28, 200, t["panel"], t["line"]))
-    s.append(text(PX + 16, TOP + 26, "Queue timeout decides", t["ink"], 12.5, 650))
-    s.append(text(PX + 16, TOP + 44, "where the flat line sits", t["ink"], 12.5, 650))
-    rows = [("2.0 s", "2,070 ms", "49/58 over", t["bad"]),
-            ("0.6 s", "778 ms", "0/58 over", t["good"])]
-    yy = TOP + 74
-    for label, val, note, col in rows:
-        s.append(text(PX + 16, yy, label, t["dim"], 11.5, 500, "start", MONO))
-        s.append(text(PX + 62, yy, val, col, 12.5, 650, "start", MONO))
-        s.append(text(PX + 16, yy + 17, note, col, 11, 500))
-        yy += 48
-    s.append(text(PX + 16, TOP + 178, "worst TTFT ≈ queue", t["faint"], 10.5))
-    s.append(text(PX + 16, TOP + 192, "timeout + engine TTFT", t["faint"], 10.5))
+    PX = R + 28
+    s.append(rect(PX, TOP, W - PX - 24, 92, t["panel"], t["line"]))
+    s.append(f'<line x1="{PX+14}" y1="{TOP+22}" x2="{PX+40}" y2="{TOP+22}" '
+             f'stroke="{t["good"]}" stroke-width="2.8"/>')
+    s.append(text(PX + 48, TOP + 26, "within 1.5 s of first send", t["ink"], 11.5, 600))
+    s.append(f'<line x1="{PX+14}" y1="{TOP+46}" x2="{PX+40}" y2="{TOP+46}" '
+             f'stroke="{t["accent"]}" stroke-width="1.8" stroke-dasharray="5 4"/>')
+    s.append(text(PX + 48, TOP + 50, "served on the first try", t["ink"], 11.5, 600))
+    s.append(text(PX + 14, TOP + 76, "share of all messages sent", t["faint"], 10.5))
 
-    # footnote
+    # The lesson: the engine's view and the user's view of the same run.
+    # The first level below target is where the two views part company most
+    # usefully: the engine still looks healthy, the users do not.
+    mid = next((p for p in pts if p["attain"] < 90), pts[-1])
+    s.append(rect(PX, TOP + 106, W - PX - 24, 174, t["panel"], t["line"]))
+    s.append(text(PX + 14, TOP + 130, f"Same run, {mid['users']} users:", t["ink"], 12, 650))
+    s.append(text(PX + 14, TOP + 156, "admitted requests", t["dim"], 11))
+    s.append(text(PX + 14, TOP + 174, f"p95 {mid['admitted_p95']:,.0f} ms", t["good"], 13, 650,
+                  "start", MONO))
+    s.append(text(PX + 14, TOP + 200, "what users waited", t["dim"], 11))
+    s.append(text(PX + 14, TOP + 218, f"p95 {mid['user_p95']:,.0f} ms", t["bad"], 13, 650,
+                  "start", MONO))
+    s.append(text(PX + 14, TOP + 244, "Refusals look free from", t["faint"], 10.5))
+    s.append(text(PX + 14, TOP + 260, "the engine. They are not.", t["faint"], 10.5))
+
     s.append(text(28, H - 22,
-                  "chat_sim.py · Poisson arrivals · log-normal think time (median 12 s) · "
-                  "6-turn conversations · seed 42 · heat-soaked card",
+                  "chat_sim.py - Poisson arrivals - log-normal think time - 6-message conversations - "
+                  "retries honour Retry-After - seed 42 - heat-soaked, control-validated",
                   t["faint"], 10.5))
-    s.append('</svg>')
+    s.append("</svg>")
     return "".join(s)
 
 
@@ -268,12 +292,12 @@ def diagram_concurrency(t):
                   t["dim"], 12.5))
 
     cards = [
-        ("6", "requests on the GPU at once", t["good"],
-         ["THE limit. Set by the gateway.", "Measured: p95 TTFT holds at 6,",
-          "fails by 36% at 12.", "", "Cap fixed; what fits is dynamic —",
-          "a 20k prompt costs 4 of the 6."]),
+        ("10", "requests on the GPU at once", t["good"],
+         ["THE limit. Set by the gateway.", "Measured on chat, which hits the",
+          "prefix cache; cold prompts held 6.", "", "Cap fixed; what fits is dynamic —",
+          "a cold 20k prompt costs 8 of 10."]),
         ("32", "--max-num-seqs", t["accent"],
-         ["The engine's own batch ceiling.", "Deliberately above 6 so it can",
+         ["The engine's own batch ceiling.", "Deliberately above 10 so it can",
           "never be the binding limit.", "", "Raising it 8 → 32 bought +87%",
           "peak throughput and 0% SLO gain."]),
         ("2.13x", 'vLLM\'s "maximum concurrency"', t["faint"],

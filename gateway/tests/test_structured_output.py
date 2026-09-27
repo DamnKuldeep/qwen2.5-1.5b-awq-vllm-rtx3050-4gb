@@ -217,7 +217,7 @@ def test_missing_max_tokens_is_bounded(gateway, auth):
     vLLM's OpenAI server defaults an absent max_tokens to the REST OF THE
     CONTEXT WINDOW (max_model_len - input_length). On a 32k window that is
     ~30,000 tokens of generation for a client that simply forgot the field -
-    holding one of six admission slots for minutes. The gateway injects a
+    holding an admission slot for minutes. The gateway injects a
     bounded default so the admission limit means what it says.
     """
     client, captured = gateway
@@ -261,7 +261,7 @@ def test_single_oversized_message_is_refused_with_413(gateway, auth):
 
     The context policy never drops system messages or the current question, so
     a single huge message survives trimming untouched. Before this guard it
-    reached vLLM, occupied one of six admission slots, and came back as the
+    reached vLLM, occupied an admission slot, and came back as the
     engine's 400 - and the README claimed overflow was "never a 400".
 
     413 is the correct status and the gateway is the correct place: no GPU time
@@ -387,3 +387,63 @@ def test_json_object_mode_end_to_end():
     # pass even if response_format had been dropped entirely.
     parsed = json.loads(content)
     assert isinstance(parsed, dict), f"expected a JSON object, got: {content!r}"
+
+
+def test_long_conversation_is_trimmed_not_refused(gateway, auth):
+    """Many small turns that overflow TOGETHER must be trimmed, never refused.
+
+    The 413 guard is for a single message trimming cannot shrink. Its first
+    version summed every message, so a long ordinary conversation - exactly
+    what trimming exists for - came back 413. Only the system prompt and the
+    current question count towards refusal, because only they are undroppable.
+    """
+    client, captured = gateway
+    turn = "buffer latency throughput scheduler " * 400   # ~14k chars per turn
+    messages = [{"role": "system", "content": "You are a concise assistant."}]
+    for i in range(18):
+        messages.append({"role": "user", "content": f"Note {i}: {turn}"})
+        messages.append({"role": "assistant", "content": f"Noted {i}."})
+    messages.append({"role": "user", "content": "What was note 17 about?"})
+
+    resp = client.post(
+        "/v1/chat/completions", json=base_request(messages=messages), headers=auth
+    )
+    assert resp.status_code == 200
+    assert int(resp.headers["X-Context-Trimmed-Messages"]) > 0
+    sent = captured["body"]["messages"]
+    assert sent[0]["role"] == "system"
+    assert sent[-1]["content"] == "What was note 17 about?"
+
+
+def test_dense_prompt_that_fits_is_not_refused(gateway, auth):
+    """A prompt the character heuristic calls oversized, but which fits, is served.
+
+    Measured regression: ~170,000 characters of common English words is ~20,400
+    Qwen tokens (8.3 chars/token), well inside a 32,768 window - but the 4.5
+    chars/token pre-filter estimated ~37,800 and the first version of the guard
+    refused it with 413. The refusal must rest on the engine's exact count.
+    """
+    client, captured = gateway
+    captured["chars_per_token"] = 8.3
+    body = base_request(
+        messages=[{"role": "user", "content": "system request buffer latency " * 5_600}]
+    )
+    resp = client.post("/v1/chat/completions", json=body, headers=auth)
+    assert captured.get("tokenize_calls") == 1, "pre-filter should have asked for an exact count"
+    assert resp.status_code == 200
+    assert "/v1/chat/completions" in captured["paths"]
+
+
+def test_oversized_body_is_refused_before_parsing(gateway, auth):
+    """A body over the byte ceiling is refused without touching the engine.
+
+    Not even /tokenize: the whole point of the ceiling is that an absurd body
+    must not cost engine CPU on its way to being refused.
+    """
+    client, captured = gateway
+    body = base_request(messages=[{"role": "user", "content": "x" * (5 * 1024 * 1024)}])
+    resp = client.post("/v1/chat/completions", json=body, headers=auth)
+    assert resp.status_code == 413
+    assert "bytes" in resp.json()["error"]["message"]
+    assert captured.get("tokenize_calls") is None
+    assert "/v1/chat/completions" not in captured.get("paths", [])
