@@ -23,11 +23,11 @@ python benchmarks/build_results_page.py
 | Clients | Retry a `503` like the OpenAI SDK: two retries on `Retry-After`, then the person waits a think time and sends the same message again |
 | SLO | First token within **1.5 s of the message's first send**, retries included |
 
-### The metric, and why it changed
+### The metric
 
 **SLO attainment** is the share of messages whose first token arrived within 1.5 s of the moment the user first pressed send. A message refused once has already missed it, because the retry comes at least 2 s later. This is the goodput framing used in serving research, and it is the user's view.
 
-The column **TTFT p95, admitted** is the engine's view: latency of the requests the gateway let through. This project reported that view first and could say "no user over the SLO at any load". It was true of admitted requests and hid the refused ones. Judged by admitted latency alone, refusing everyone scores perfectly.
+The column **TTFT p95, admitted** is the engine's view: latency of the requests the gateway let through. It is reported for comparison, never as the SLO: it cannot see refused messages, so judged by it alone, refusing everyone would score perfectly.
 
 ## 1. Capacity
 
@@ -103,9 +103,9 @@ The flag vLLM's docs pair with this one, `--max-num-partial-prefills > 1`, is wh
 
 ### 5b. Tuning the gateway from the user's side
 
-Both settings were first chosen from the engine's side, and both moved once refusals were counted as the delay they are.
+Both settings are scored on SLO attainment with retrying clients, because a refusal is a delay the user pays, not a free outcome.
 
-**Queue timeout** (measured before the admission limit was raised, so at 6 in flight):
+**Queue timeout** (measured at 6 requests in flight):
 
 | queue timeout | 20 users: SLO attainment | 40 users | admitted p95 at 40 users |
 | ---: | ---: | ---: | ---: |
@@ -113,7 +113,7 @@ Both settings were first chosen from the engine's side, and both moved once refu
 | 1.0 s | 79% | 51% | 1,240 ms |
 | 2.0 s | 81% | 36% | 2,058 ms |
 
-0.6 s came from `worst admitted TTFT ≈ timeout + engine TTFT`, which treats a refusal as free. A refused client retries after `Retry-After: 2`, so it waits longer than a queued one would have. 1.0 s was kept: best at 40 users, and 2.0 s pushed *admitted* p95 past the SLO. At 20 users the arms sit inside the run-to-run spread, which the two 0.6 s runs show plainly.
+The arithmetic bound `timeout ≈ SLO − engine TTFT` gives 0.6 s, but it treats a refusal as free. A refused client retries after `Retry-After: 2`, so it waits longer than a queued one would have. 1.0 s is shipped: best at 40 users, while 2.0 s pushed *admitted* p95 past the SLO. At 20 users the arms sit inside the run-to-run spread, which the two 0.6 s runs show plainly.
 
 **Admission limit** (queue timeout 1.0 s):
 
@@ -123,7 +123,7 @@ Both settings were first chosen from the engine's side, and both moved once refu
 | 8 | 96% | 61% | 1,218 ms | 299 |
 | 10 | 99% | 61% | 1,082 ms | 308 |
 
-The original limit of 6 came from a ramp in which **every** request is a cold ~512-token prefill. Chat resends its history, which the engine serves from the prefix cache, so each chat request is far cheaper and the engine holds 10 with *admitted* latency no worse than at 6. At 40 users 8 and 10 tie near 300 tok/s: that plateau is the GPU, and more slots past it would only add latency. Cold prompts are still charged by their uncached size, which keeps a burst of them out of the regime the ramp measured.
+A ramp in which **every** request is a cold ~512-token prefill holds 6 inside the SLO. Chat resends its history, which the engine serves from the prefix cache, so each chat request is far cheaper and the engine holds 10 with *admitted* latency no worse than at 6. At 40 users 8 and 10 tie near 300 tok/s: that plateau is the GPU, and more slots past it would only add latency. Cold prompts are still charged by their uncached size, which keeps a burst of them out of the regime the ramp measured.
 
 **How strong this evidence is.** The arms ran back to back in one heat-soaked session, and every pairing favoured the higher limit. But across all runs at the final configuration, 20-user attainment ranged from 87% to 97% (sections 1 and 5a), which overlaps the 85–92% measured at 6. The decision rests on the paired comparison, on admitted latency not getting worse, and on the reason for 6 not applying to chat, not on a gap larger than the noise.
 

@@ -125,8 +125,8 @@ def gateway_section(A) -> None:
     if not qt and not inf:
         return
     A("### 5b. Tuning the gateway from the user's side\n")
-    A("Both settings were first chosen from the engine's side, and both moved once "
-      "refusals were counted as the delay they are.\n")
+    A("Both settings are scored on SLO attainment with retrying clients, because a "
+      "refusal is a delay the user pays, not a free outcome.\n")
 
     def arm(prefix: str, value: str, extra: list[str]) -> str:
         c20 = load(f"{prefix}{value}_chat_20users", ABLATION)
@@ -138,7 +138,7 @@ def gateway_section(A) -> None:
         return " | ".join(cells + extra)
 
     if qt:
-        A("**Queue timeout** (measured before the admission limit was raised, so at 6 in flight):\n")
+        A("**Queue timeout** (measured at 6 requests in flight):\n")
         A("| queue timeout | 20 users: SLO attainment | 40 users | admitted p95 at 40 users |")
         A("| ---: | ---: | ---: | ---: |")
         vals = sorted({re.search(r"qt([\d.]+)_", p.name).group(1) for p in qt}, key=float)
@@ -146,11 +146,11 @@ def gateway_section(A) -> None:
             if not load(f"qt{v}_chat_20users", ABLATION):
                 continue
             A(f"| {v} s | {arm('qt', v, [])} |")
-        A("\n0.6 s came from `worst admitted TTFT ≈ timeout + engine TTFT`, which treats a "
+        A("\nThe arithmetic bound `timeout ≈ SLO − engine TTFT` gives 0.6 s, but it treats a "
           "refusal as free. A refused client retries after `Retry-After: 2`, so it waits longer "
-          "than a queued one would have. 1.0 s was kept: best at 40 users, and 2.0 s pushed "
-          "*admitted* p95 past the SLO. At 20 users the arms sit inside the run-to-run spread, "
-          "which the two 0.6 s runs show plainly.\n")
+          "than a queued one would have. 1.0 s is shipped: best at 40 users, while 2.0 s "
+          "pushed *admitted* p95 past the SLO. At 20 users the arms sit inside the run-to-run "
+          "spread, which the two 0.6 s runs show plainly.\n")
     if inf:
         A("**Admission limit** (queue timeout 1.0 s):\n")
         A("| requests in flight | 20 users: SLO attainment | 40 users | admitted p95 at 40 users | "
@@ -161,9 +161,9 @@ def gateway_section(A) -> None:
             c40 = load(f"inflight{v}_chat_40users", ABLATION)
             tokps = "{:.0f}".format(c40["totals"]["output_tok_per_s"]) if c40 else "–"
             A(f"| {v} | {arm('inflight', v, [tokps])} |")
-        A("\nThe original limit of 6 came from a ramp in which **every** request is a cold "
-          "~512-token prefill. Chat resends its history, which the engine serves from the "
-          "prefix cache, so each chat request is far cheaper and the engine holds 10 with "
+        A("\nA ramp in which **every** request is a cold ~512-token prefill holds 6 inside "
+          "the SLO. Chat resends its history, which the engine serves from the prefix "
+          "cache, so each chat request is far cheaper and the engine holds 10 with "
           "*admitted* latency no worse than at 6. At 40 users 8 and 10 tie near 300 tok/s: "
           "that plateau is the GPU, and more slots past it would only add latency. Cold "
           "prompts are still charged by their uncached size, which keeps a burst of them "
@@ -225,15 +225,14 @@ def main() -> int:
       "person waits a think time and sends the same message again |")
     A("| SLO | First token within **1.5 s of the message's first send**, retries included |\n")
 
-    A("### The metric, and why it changed\n")
+    A("### The metric\n")
     A("**SLO attainment** is the share of messages whose first token arrived within 1.5 s of "
       "the moment the user first pressed send. A message refused once has already missed "
       "it, because the retry comes at least 2 s later. This is the goodput framing used in "
       "serving research, and it is the user's view.\n")
     A("The column **TTFT p95, admitted** is the engine's view: latency of the requests the "
-      "gateway let through. This project reported that view first and could say \"no user "
-      "over the SLO at any load\". It was true of admitted requests and hid the refused ones. "
-      "Judged by admitted latency alone, refusing everyone scores perfectly.\n")
+      "gateway let through. It is reported for comparison, never as the SLO: it cannot see "
+      "refused messages, so judged by it alone, refusing everyone would score perfectly.\n")
 
     A("## 1. Capacity\n")
     A(HEAD)

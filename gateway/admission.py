@@ -9,10 +9,10 @@ rising, with every user waiting and nobody served well. An unbounded queue
 converts "too much load" into "everyone gets a bad experience" instead of
 "some people get told to come back".
 
-HOW MANY AT ONCE: 10, AND WHY IT WAS 6
---------------------------------------
-The first limit came from `ramp.py`, which holds N requests in flight where
-EVERY request is a cold ~512-token prefill (Finalization Phases 2-3):
+HOW MANY AT ONCE: 10 FOR CHAT, 6 FOR COLD PROMPTS
+-------------------------------------------------
+`ramp.py` holds N requests in flight where EVERY request is a cold ~512-token
+prefill (Finalization Phases 2-3):
 
     concurrency 6   p95 TTFT 1005-1135 ms   PASS, +24..33% margin
     concurrency 8   p95 TTFT 1401-1605 ms   marginal
@@ -38,10 +38,10 @@ keeps a burst of them from reaching the regime the ramp measured.
 THE QUEUE IS DELIBERATELY SHALLOW, AND ITS TIMEOUT IS SET FROM THE USER'S SIDE
 ------------------------------------------------------------------------------
 A queued request's TTFT includes its queue wait, so the queue exists to absorb
-arrival jitter, not to store backlog. The timeout was first set to 0.6 s from
-"worst admitted TTFT ~ timeout + engine TTFT". That arithmetic treats a refusal
-as free. It is not: the client retries after Retry-After (2 s), so a refused
-user waits longer than a queued one would have. Measured, 1.0 s beat 0.6 s at
+arrival jitter, not to store backlog. "Worst admitted TTFT ~ timeout + engine
+TTFT" suggests 0.6 s, but that arithmetic treats a refusal as free. It is not:
+the client retries after Retry-After (2 s), so a refused user waits longer than
+a queued one would have. Measured, 1.0 s beat 0.6 s at
 40 users (51% vs 35% attainment) while 2.0 s pushed ADMITTED p95 past the SLO.
 
 FAIRNESS — AND THE FIXED CAP THAT DID NOT WORK

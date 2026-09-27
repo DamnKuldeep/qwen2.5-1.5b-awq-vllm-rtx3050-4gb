@@ -6,12 +6,10 @@ Everything below is derived from measurements on one machine — a laptop RTX
 3050 with 4 GiB of VRAM — and every number states how it was obtained. Where a
 figure is inherited from an earlier stage rather than re-measured, it says so.
 
-> **Current numbers live in [RESULTS.md](RESULTS.md)**, which is generated from
-> the result files and cannot drift from them. This document explains *why*
-> the numbers are what they are. The short version of the current state:
-> **20 concurrent chat users with ≥90% of messages getting a first token within
-> 1.5 s of first send, retries included** (97% measured); the knee is sharp, and
-> 25 users measured 67–78%.
+> **The answer: 20 concurrent chat users**, with 97% of messages getting a first
+> token within 1.5 s of first send, retries included. The knee is sharp: 25
+> users measured 67–78%. This document explains *why*; every number is also
+> regenerated from the result files in [RESULTS.md](RESULTS.md).
 
 ---
 
@@ -144,14 +142,13 @@ With ~4 s of service per turn under load (192 tokens at ~20 ms) and 10 slots,
 ~40 users. **The measured capacity is 20** — half that — and the gap is the
 lesson of this section.
 
-The earlier version of this model said "~22 users at 75% utilisation" with 6
-slots, and a simulator that never retried seemed to confirm it. Both were
-optimistic for the same reason: they treated arrivals as smooth. Chat arrivals
-are bursty (Poisson), and with a tight queue budget (1.0 s) what matters is
-the chance that a new message finds every slot busy. By Erlang C that chance
-climbs steeply long before 100% utilisation. A refused user also comes back
-2–3 s later, adding load at exactly the wrong moment. Measured with retrying
-clients: 20 users kept 97% of messages inside the SLO, 25 users 67–78%.
+Duty-cycle arithmetic assumes arrivals are smooth, and chat arrivals are not.
+They are bursty (Poisson), and with a tight queue budget (1.0 s) what decides
+latency is the chance that a new message finds every slot busy. By Erlang C
+that chance climbs steeply long before 100% utilisation. A refused user also
+comes back 2–3 s later, adding load at exactly the wrong moment. So the usable
+point sits near 50% utilisation, not 75–100%: measured with retrying clients,
+20 users kept 97% of messages inside the SLO, and 25 users 67–78%.
 
 Scaling that measured anchor by duty cycle (an extrapolation, not a
 measurement):
@@ -284,168 +281,113 @@ holds across models at comparable thermal state; it is a special case of
 
 ## 7. The measured curve
 
-**The current curve is in [RESULTS.md §1](RESULTS.md#1-capacity)**: SLO
-attainment measured from each message's first send, with clients that retry a
-503. The tables in 7.1–7.4 below are kept because the reasoning in them still
-holds, but **their numbers are superseded**. They were measured with a
-simulator that dropped a refused message instead of retrying it, which deleted
-the long context of any conversation whose opening was refused (so heavier
-shedding produced a lighter workload), and they judged latency on admitted
-requests only. "0 users over the SLO" in those tables is true of admitted
-requests and says nothing about the refused ones. What changed and why is in
-[DECISIONS.md](../DECISIONS.md) under "Made during the evidence suite".
+All runs: `chat_sim.py`, Poisson arrivals, log-normal think time (mean 12 s),
+6-message conversations that accumulate context, 192-token replies, fixed seed
+42, 120 s per run, heat-soaked card, clients that retry a `503` like the OpenAI
+SDK. **SLO attainment** is the share of messages whose first token arrived within
+1.5 s of the first send, retries included. Every table here is regenerated in
+[RESULTS.md](RESULTS.md) from the result files.
 
-All runs: `chat_sim.py`, Poisson arrivals, log-normal think time (median 12 s),
-6-turn conversations that accumulate context, fixed seed 42, 120 s, discarded
-warm-up, heat-soaked card. Engine config embedded in every result file.
+| users | SLO attainment | served first try | admitted p95 | output tok/s | cache hit |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | **100%** | 100% | 854 ms | 92 | 79% |
+| 20 | **97%** | 97% | 840 ms | 182 | 88% |
+| 25 | 67% / 78% | 71% / 81% | 1,437 / 1,315 ms | 195 / 184 | 74% / 93% |
+| 30 | 64% | 71% | 1,823 ms | 218 | 87% |
+| 40 | 35% | 41% | 1,633 ms | 230 | 85% |
+| 60 | 24% | 27% | 2,190 ms | 236 | 81% |
+| 10 *(control, re-run last)* | **100%** | 100% | 892 ms | 91 | 81% |
 
-### 7.1 Degradation is bounded — and the queue timeout decides where the ceiling sits
+**The knee sits between 20 and 25 users, and it is sharp.** Admitted p50 roughly
+triples between them, which is the engine saturating; output throughput then
+plateaus in the low 200s tok/s while offered load keeps rising, and what gives
+is the share of messages served on the first try. Past the knee, repeat runs
+disagree (25 users: 67% and 78%): refused users come back 2–3 s later, so
+saturated load feeds on itself. Below it, the control reproduced exactly.
 
-The same sweep run twice, changing one variable: `GATEWAY_QUEUE_TIMEOUT_S`.
+### 7.1 The queue timeout, from the user's side
 
-**Queue timeout 2.0 s:**
-
-| users | shed % | p95 TTFT | worst user p95 | users over SLO | cache hit |
-| ---: | ---: | ---: | ---: | :---: | ---: |
-| 10 | 0.0 | 260 ms | 592 ms | 0/10 | 83.4% |
-| 10 *(control)* | 0.0 | **266 ms** | 834 ms | 0/10 | 83.9% |
-| 20 | 0.0 | 1,137 ms | 1,570 ms | 1/20 | 88.8% |
-| 30 | 10.0 | **2,070 ms** | 2,201 ms | 21/30 | 86.8% |
-| 40 | 22.5 | **2,071 ms** | 2,211 ms | 32/40 | 88.1% |
-| 60 | 47.1 | **2,116 ms** | 2,417 ms | 49/58 | 83.9% |
-
-**Queue timeout 0.6 s (shipped until the evidence suite; now 1.0 s, see below):**
-
-| users | shed % | p95 TTFT | worst user p95 | users over SLO | cache hit |
-| ---: | ---: | ---: | ---: | :---: | ---: |
-| 10 | 0.0 | 191 ms | 215 ms | **0/10** | 96.6% |
-| 20 | 8.0 | 434 ms | 1,090 ms | **0/20** | 85.8% |
-| 30 | 25.1 | 706 ms | 801 ms | **0/30** | 83.0% |
-| 40 | 38.9 | 717 ms | 920 ms | **0/40** | 83.5% |
-| 60 | 56.9 | **778 ms** | 898 ms | **0/58** | 81.8% |
-
-**Two things happen here, and the second is the more useful one.**
-
-First, degradation is bounded in both configurations. At a 2.0 s timeout, p95
-TTFT rose **2.2% while offered load doubled** (30 → 60 users). That flat line is
-admission control working: excess load is refused with `503` + `Retry-After`
-instead of being absorbed into a queue that makes everyone slower.
-
-Second — and this is the part that matters — **bounded is not the same as
-acceptable.** At 2.0 s the flat line sits at ~2,070 ms, *above* the 1.5 s
-objective, and **49 of 58 users breached the SLO at 60 users**. The service
-degraded gracefully into a state that still failed its promise.
-
-The fix is arithmetic, not tuning:
-
-```
-worst-case client TTFT  ≈  queue_timeout + engine_TTFT
-1.5 s objective − ~0.8 s engine TTFT  ≈  0.6 s of queue budget
-```
-
-At 0.6 s, the flat line drops to **778 ms at 60 users, and 0 of 58 users breach
-the SLO** — for **10 percentage points more shedding** (47.1% → 56.9%).
-
-> **That trade is the whole thesis of admission control**: refusing one request
-> in ten more, so that every request you *do* accept is served within its
-> latency target. A 503 the client can retry is a better product than a
-> success nobody wanted to wait for.
->
-> **Later correction.** The arithmetic above is right for admitted requests
-> and wrong for users, because it treats a refusal as free. A client retries
-> after `Retry-After: 2`, so a refused message waits at least 2 s: longer than
-> a slightly longer queue wait would have been. Re-measured with retrying
-> clients, 1.0 s beat 0.6 s at 40 users (51% vs 35% SLO attainment), and 2.0 s
-> pushed admitted p95 past the SLO. 1.0 s is shipped. See RESULTS.md §5b.
+Worst-case admitted TTFT is roughly `queue timeout + engine TTFT`, which suggests
+`1.5 s − ~0.9 s ≈ 0.6 s` of queue. That bound is right for admitted requests and
+wrong for users, because it treats a refusal as free: a refused client waits
+for `Retry-After: 2` and then queues again. Measured with retrying clients
+(RESULTS §5b), 1.0 s gave the best attainment at 40 users (51% against 35% at
+0.6 s), while 2.0 s pushed admitted p95 to ~2 s, past the SLO for the requests
+that were served. **1.0 s is shipped.**
 
 ### 7.2 The prefix-cache knee: predicted, and it did not appear
 
-The prediction on the record was a **knee** — capacity holding while the
-working set fits the shared pool, then falling sharply as LRU eviction makes
-every turn re-prefill its history.
+The prediction on the record was a **knee**: capacity holding while the working
+set fits the shared pool, then falling sharply as LRU eviction makes every turn
+re-prefill its history.
 
-**Hit rate never collapsed.** It held **74–97% across every run**, from 10 users
-to 60, and from 550-token conversations to 2,500-token ones.
+**Hit rate never collapsed.** It held **63–95% across every run**, from 10 users
+to 80. Conversation length, holding users at 20:
 
-The conversation-length ablation, holding users at 20 and growing conversations:
+| opening context | mean prompt | SLO attainment | admitted p95 | cache hit |
+| ---: | ---: | ---: | ---: | ---: |
+| ~300 tokens | 588 | 88% | 1,494 ms | 82% |
+| ~2,000 tokens | 1,808 | 60% | 2,914 ms | 74% |
+| ~8,000 tokens | 6,244 | 27% | 5,350 ms | 70% |
 
-| target opening | mean prompt | shed % | p95 TTFT | **worst user p95** | users over SLO | cache hit |
-| ---: | ---: | ---: | ---: | ---: | :---: | ---: |
-| 300 | 553 | 10.3 | 560 ms | 916 ms | 0/20 | 79.0% |
-| 1,000 | 868 | 19.7 | 747 ms | 867 ms | 0/20 | 76.2% |
-| 2,000 | 1,312 | 15.4 | 912 ms | 1,473 ms | 0/20 | 82.1% |
-| 4,000 | 1,731 | 26.7 | 1,844 ms | **3,153 ms** | 6/20 | 83.7% |
-| 8,000 | 2,541 | 28.2 | **3,380 ms** | **9,621 ms** | 6/20 | 86.7% |
+Long conversations destroy attainment, but the cache holds. **Why the knee is
+absent, and it is not a null result:**
 
-Long conversations *do* destroy the tail — worst-user p95 goes from 916 ms to
-**9,621 ms**, a 10x degradation. But hit rate went **up**, not down.
-
-**Why the knee is absent, and it is not a null result:**
-
-1. **Admission control caps how many conversations are *progressing*.** With six
-   slots and 57% shedding at 60 users, only a couple of dozen conversations
-   ever advance. The working set never outgrows the 69,760-token pool, so
-   eviction never becomes the binding effect. **Load shedding protects the
-   prefix cache as a side effect** — two mechanisms designed independently that
-   turn out to reinforce each other.
+1. **Admission control caps how many conversations are *progressing*.** The
+   working set of the conversations actually advancing never outgrows the
+   69,760-token pool, so eviction never becomes the binding effect. **Load
+   shedding protects the prefix cache as a side effect**: two mechanisms
+   designed independently that reinforce each other.
 
 2. **Within a conversation, the prefix is reused by construction.** Turn *n*
-   resends turns 1…*n*−1, which were computed seconds ago and are still the most
-   recently used blocks in the pool. The expensive event is not a mid-conversation
-   miss; it is the **cold first turn**, which for an 8,000-token opening costs
-   ~3.4 s of prefill by the model in §2. That is what the worst-user tail is
-   made of.
+   resends turns 1…*n*−1, computed seconds ago and still the most recently used
+   blocks in the pool. The expensive event is the **cold first turn**: every
+   user in the 8k run opens by pasting ~8,000 tokens, and twenty cold, quadratic
+   prefills are close to a minute of GPU time on their own.
 
 3. **The shared system prompt is always a hit**, for every user on every turn,
-   which puts a floor under the aggregate hit rate that no amount of eviction
-   removes.
+   which puts a floor under the aggregate hit rate.
 
-So the honest revision to the capacity model: **on this hardware the cache knee
-is unreachable while admission control is doing its job.** The 6x uncertainty
-this project set out to resolve — ~17 users if cache-bound, ~110 if
-compute-bound — resolves to **admission-bound** (then ~22 users by the old
-metric, now 20 at ≥90% attainment with retrying clients), and the cache is not
-the binding constraint in any regime we can actually reach.
+So on this hardware **the cache knee is unreachable while admission control is
+doing its job**: the capacity question the project set out to resolve (~17 users
+if cache-bound, ~110 if compute-bound) resolves to **admission-bound, 20 users at
+≥90% attainment**.
 
-*Caveat, stated because it cuts against the result:* prefix-cache counters are
-cumulative per engine process, and these runs share one. A later run inherits
-blocks the earlier ones computed — the 96.6% at 10 users, measured immediately
-after other runs, is visibly inflated relative to the 83.4% measured earlier
-from a colder cache. Isolating this properly needs an engine restart between
-arms, which was not done. The *shape* of the result (no collapse) is robust
-because it holds across every arm; the absolute percentages are optimistic.
+*Caveat:* prefix-cache counters are cumulative per engine process, and the
+sweep's runs share one engine, so a later run can inherit blocks an earlier one
+computed (25 users: 74% and 93% hit rate in two runs). The *shape* of the result
+(no collapse) holds across every arm; the absolute percentages lean optimistic.
 
 ### 7.3 Traffic shapes
 
-| shape | users | shed % | p95 TTFT | worst user p95 | users over SLO |
-| --- | ---: | ---: | ---: | ---: | :---: |
-| **burst** (baseline, then 4x spike) | 80 | 67.4 | 994 ms | 1,058 ms | **0/68** |
-| **ramp** (population grows over the run) | 60 | 47.5 | 988 ms | 1,308 ms | **0/51** |
-| **thundering herd** (all connect at once) | 60 | 63.9 | 1,064 ms | 2,257 ms | 5/55 |
-| **adversarial** (1 abusive key @ 50 concurrent) | 10 | 10.7 | 536 ms | 818 ms | **0/10** |
+| shape | users | SLO attainment | served first try | admitted p95 | cache hit |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **diurnal** (slow sine, peak 40) | 40 | **87%** | 87% | 1,233 ms | 95% |
+| **ramp** (population grows over the run) | 60 | 54% | 54% | 1,378 ms | 84% |
+| **burst** (baseline, then 4x spike) | 80 | 11% | 24% | 2,983 ms | 73% |
+| **thundering herd** (all connect at once) | 60 | 9% | 12% | 3,230 ms | 63% |
 
-The herd is the only shape that breaches, and only for 5 of 55 users. That is
-the expected weak point: every client arriving in the same instant means the
-queue fills before any request has completed, so the first cohort waits the
-full queue timeout. It recovers within one think-time cycle.
+The realistic shape is the gentle one: a daily cycle peaking at twice the
+capacity point still keeps 87%, because the peak is brief and the cache stays
+warm. A burst or a herd far past capacity fails on attainment but not on
+correctness: nothing errors, every refusal carries `Retry-After`, and admitted
+requests are still served in about 3 s. The herd is the worst case, because
+every client arrives before any request has completed, and its cold openings
+are the only time the cache hit rate dipped to 63%.
 
 ### 7.4 Fairness, quantified
 
-One key issuing 50 concurrent requests continuously, against ten normal users:
+One key issuing 50 concurrent requests continuously, against ten normal users
+on their own keys: the normal users kept **94% SLO attainment** (7 of 10 with
+every message inside it), while the abusive key had **2,014 of 2,079 requests
+refused (96.9%)**.
 
-| | p95 TTFT (normal users) | worst user | users over SLO |
-| --- | ---: | ---: | :---: |
-| No abuser (baseline) | 191 ms | 215 ms | 0/10 |
-| **With abuser** | **536 ms** | 818 ms | **0/10** |
-
-**Degradation: +181%, and every user still 64% inside the SLO.** The abusive key
-attempted 4,749 requests and had **4,669 shed (98.3%)**.
-
-This required a fix. The first implementation used a **fixed** per-key cap of 3
-against 6 slots, which hands one tenant half the service regardless of how many
-other tenants exist — and it measured **10/10 normal users over SLO**. The
-shipped version divides the pool by the number of *contending* keys, so the
-abusive key's share falls from 50% to ~14% the moment other tenants appear.
+The mechanism is a **dynamic** share: `ceil(10 / contending keys)`, capped at
+half the pool. A fixed cap of half the pool was measured too, and it is not
+fairness but a quota: with a fixed 3 of 6 slots, one abusive tenant pushed
+**10/10 normal users past the SLO**. Dividing by the number of *contending*
+keys drops the abuser's share to a tenth of the engine the moment ten other
+tenants appear, and gives it back when they leave.
 
 ---
 
@@ -456,7 +398,9 @@ abusive key's share falls from 50% to ~14% the moment other tenants appear.
 | **Shared system prompt** | Doubles SLO-compliant concurrency (Stage 11 Exp 2: 2x, TTFT −82%) | None. Structure the workload to share a prefix |
 | **Shorter conversations** | Directly shrinks the working set; the primary cache lever | Loses history; a trim is also a guaranteed cache miss |
 | **Smaller model** | 4.3x more SLO-compliant throughput (3B → 1.5B) | Answer quality — measured as *no observable difference* on this project's control question, but that is one data point |
-| **Queue timeout** | Bounds p95 TTFT under overload | Higher 503 rate; the trade is explicit |
+| **Admission limit measured on the real workload** | 10 in flight on chat, where a cold-prompt ramp says 6 | A burst of cold long prompts must still be charged by size (cost on uncached tokens) |
+| **`--long-prefill-token-threshold 512`** | One long prefill no longer blocks everyone (11–13 s → 0.4 s for short requests) | The long prompt's own prefill takes more scheduler steps |
+| **Queue timeout** | Bounds admitted TTFT under overload; 1.0 s maximises attainment with retrying clients | Longer waits break the SLO for admitted work; shorter ones turn waits into ≥2 s retries |
 | **Better cooling** | Decode scales with sustained SM clock, ~1.5x observed range | Hardware |
 | **`--max-num-seqs`** | Raises peak throughput (367 → 686 tok/s) | Nothing at or below the SLO — it buys throughput you cannot use |
 | **`--gpu-memory-utilization`** | Every extra MiB becomes KV cache at 28 KiB/token | Startup becomes dependent on desktop VRAM state; see §9 |

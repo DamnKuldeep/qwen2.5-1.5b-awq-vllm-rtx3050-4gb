@@ -7,12 +7,16 @@ whichever matches yours.
 
 | Document | Answers |
 | --- | --- |
-| **[../README.md](../README.md)** | What is this, how many users, how do I run it. The pitch, with the headline numbers and the diagrams |
+| **[../README.md](../README.md)** | What it is, how many users it serves, how it is built and how to run it: headline numbers, architecture, engineering decisions |
 | **[RESULTS.md](RESULTS.md)** | *Every scenario, every number, in one place*, generated from the result files and never typed. SLO attainment from the user's side (retries included) across the capacity sweep, traffic shapes, conversation lengths and an abusive client; the ablations behind every shipped setting; failure injection; live Grafana captures |
 | **[CAPACITY_MODEL.md](CAPACITY_MODEL.md)** | *How many people can talk to this at once, and what decides the answer.* The derivation, the measured curve, the levers, and exactly where each number stops being true |
 | **[FAILURE_MATRIX.md](FAILURE_MATRIX.md)** | *What happens when it breaks.* Fourteen failure cases, each with the behaviour expected **before** testing next to the behaviour measured after |
 
 ## If you want the reasoning
+
+These are records, kept in the order things happened: they show each choice as it
+was made, including ones a later measurement revised. The shipped state is what
+the README, RESULTS and CAPACITY_MODEL describe.
 
 | Document | Answers |
 | --- | --- |

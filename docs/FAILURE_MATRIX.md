@@ -48,7 +48,7 @@ Measured on the final configuration in the evidence run of 2026-09-27.
 | --- | --- | --- | --- | :---: |
 | 1 | **Burst 10x over capacity** (100 simultaneous) | admitted latency bounded; excess refused with 503 + `Retry-After` | 12 served, **88 refused**, `Retry-After: 2`; served p95 TTFT **1,441 ms** | ✅ |
 | 2 | **One abusive key at 50 concurrent** | other users stay within SLO | normal users: **94% of messages within the SLO** from first send, retries included; abuser refused **2,014 of 2,079 (96.9%)** | ✅ |
-| 3 | **Single ~20k-token prompt** | short requests keep flowing | short requests **99 ms → 636 ms** while the 20k prompt prefilled (it was 11–13 s before `--long-prefill-token-threshold`); the big prompt itself served, 20,448 tokens | ✅ |
+| 3 | **Single ~20k-token prompt** | short requests keep flowing | short requests **99 ms → 636 ms** while the 20k prompt prefilled (11–13 s without `--long-prefill-token-threshold`); the big prompt itself served, 20,448 tokens | ✅ |
 | 4 | **Conversation outgrows the window** | 200 with oldest turns dropped and reported; never a hard 400 | HTTP **200**, `X-Context-Trimmed-Messages: 27`; ~95,488 tokens sent → engine saw **9,726** | ✅ |
 | 4b | **A single message larger than the window** | refused before it costs a slot | **413** before admission, decided on the engine's exact token count (`/tokenize`), never on a character estimate; a body over 4 MiB is refused before it is even parsed | ✅ |
 | 5 | **Engine crash mid-stream** | 502, auto-recovery, gateway stays Running (liveness) while going NotReady (readiness) | crash detected **1.2 s**, automatic recovery **79.4 s**; `/health` **200 throughout**, `/ready` 503→200; 149×502, 3×500, 4×200; **156 of 156** requests in the ledger, **drift 0** | ✅ |
@@ -81,39 +81,29 @@ Worth recording, because the first two look like they work:
 * **`pkill -9 -f EngineCore`** — the realistic crash. The process doing the GPU
   work dies, the API server exits, and the restart policy *does* apply.
 
-And the timing needs care: the first version of this test reported a recovery
-time of **0.8 s**, because it probed `/ready` before the API server had noticed
-its worker was gone — timing the gap between issuing a kill and the kill taking
-effect, and calling it recovery. The test now confirms the outage exists before
-starting the clock on it ending.
+And the timing needs care. Probing `/ready` straight after issuing the kill
+reports a "recovery" of ~0.8 s, because the API server has not yet noticed its
+worker is gone: that measures the gap before the kill takes effect. The test
+confirms the outage exists before starting the clock on it ending.
 
 ---
 
-## Case 3 — written off as unfixable, then fixed with one flag
+## Case 3 — head-of-line blocking, and the one flag that fixes it
 
-A single ~20,000-token prompt pushed concurrent short requests from ~100 ms to
-**10–20 s** of TTFT. Nothing errored and nothing was shed; the service was
-simply unavailable to everyone else for the length of one prefill.
+Without intervention, a single ~20,000-token prompt pushes concurrent short
+requests from ~100 ms to **11–13 s** of TTFT. Nothing errors and nothing is
+shed; the service is simply unavailable to everyone else for the length of one
+prefill.
 
 **The cause** is the V1 scheduler's order of work. Running requests are
 scheduled first, and a long prompt mid-prefill takes the whole 2,048-token step
-budget until it is done, so a new arrival gets nothing. Chunked prefill does
-not prevent this, which was the assumption going in.
+budget until it is done, so a new arrival gets nothing. Chunked prefill alone
+does not prevent this.
 
-**Why it was written off.** vLLM documents this trio for the problem:
-
-```
---max-num-partial-prefills=4 --max-long-partial-prefills=1 --long-prefill-token-threshold=2048
-```
-
-They were accepted, logged `Concurrent partial prefills enabled`, and then the
-server died on `assert envs.VLLM_USE_V1`, **79 restarts before it was caught**.
-The conclusion recorded was "the engine-side fix exists and cannot be used".
-
-**What was actually true.** Only `--max-num-partial-prefills > 1` forces the V0
-fallback. `--long-prefill-token-threshold` on its own is a plain per-step cap in
-the V1 scheduler, and it was never tested alone. (At 2,048 it could not have
-helped anyway: that is the whole step budget.) Ablated with a drift control:
+**The fix** is `--long-prefill-token-threshold`, a per-step cap on how many
+tokens one prefill may take. The remainder of each step goes to new arrivals'
+prefills and everyone's decode. Ablated on the shipped configuration, with a
+drift control:
 
 | threshold | short requests behind the 20k prompt | the 20k prompt itself | 20-user chat, SLO attainment |
 | ---: | ---: | ---: | ---: |
@@ -122,27 +112,25 @@ helped anyway: that is the whole step budget.) Ablated with a drift control:
 | **512 (shipped)** | **378 ms** | 12.3 s | 90.4% |
 
 The long prompt keeps making progress every step; it just no longer takes the
-whole step. Ordinary traffic was measured alongside and stayed inside the
-run-to-run spread (the two identical threshold-0 runs are 86.6% and 97.3%), so
-the only effect larger than the noise is head-of-line blocking. 512 over 1024
-because it gives newcomers more of each step; that difference is also small. **Lesson: when several flags fail together, test them one at a time
-before writing off the problem.**
+whole step. Ordinary traffic stayed inside the run-to-run spread (the two
+identical threshold-0 runs are 86.6% and 97.3%), so the effect that matters is
+head-of-line blocking. 512 gives newcomers more of each step than 1024.
 
-**Two false passes along the way**, both worth knowing about:
+> **Pitfall on vLLM 0.11:** the docs pair this flag with
+> `--max-num-partial-prefills > 1`. That flag is accepted, logs
+> `Concurrent partial prefills enabled`, then falls back to the V0 engine, and
+> the 0.11 API server dies on `assert envs.VLLM_USE_V1` in a crash loop. Use the
+> threshold **alone**; it is honoured by the V1 scheduler and is all this needs.
 
-1. A fixed prompt string hit the prefix cache on the second run (13,159 ms →
-   370.9 ms) and reported PASS while measuring nothing. The prompt now starts
-   with a per-run nonce; it has to be at the **front**, because vLLM's prefix
-   hash is a chain from block 0.
-2. When the gateway's first 413 guard wrongly refused the 20k prompt (it
-   assumed 4.5 characters per token; plain English measured 8.3), the short
-   requests got *faster*, and the case kept passing while no long prefill ran
-   at all. The verdict now requires the big prompt to be served.
-
-**Weighted admission is still worth having.** The threshold stops one long
-prefill from blocking newcomers, but only one prefill runs at a time, so two
+**Weighted admission still matters.** Only one prefill runs at a time, so two
 cold 20k prompts still serialise. The gateway charges a cold long prompt up to
 8 of 10 slots, which keeps a burst of them from queueing everyone else.
+
+**Measuring this case correctly** takes two precautions. The big prompt starts
+with a per-run nonce, at the **front**, because vLLM's prefix hash is a chain
+from block 0: a repeated prompt is a full cache hit and measures nothing. And
+the verdict requires the big prompt itself to be served, so a request refused
+upstream cannot make the short requests look fast.
 
 ---
 

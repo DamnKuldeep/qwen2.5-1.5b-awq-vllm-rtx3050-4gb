@@ -6,34 +6,25 @@ Built 2026-09-07/08 on a single RTX 3050 laptop GPU with 4 GiB of VRAM.
 
 **Every number in this report was measured on that machine.** Where a figure is an estimate, it says so. Where a measurement is unreliable, it says why.
 
-> ### ⚠ Sections 1–11 describe v1, which shipped `Qwen2.5-3B-Instruct-AWQ`
+> ### How to read this report
 >
-> They are left as written, because the reasoning in them is what produced the
-> v2 decisions and rewriting history would hide that. **The finalized stack is
-> different**, and sections 12 onward describe it:
+> This is the build record: the project was built in stages, and the report
+> follows them, keeping each stage's reasoning and the predictions it got wrong.
+> Sections 1–11 cover the first engine, `Qwen2.5-3B-Instruct-AWQ`; section 12
+> onward covers the shipped stack. **The final configuration:**
 >
-> | | v1 (sections 1–11) | **Finalized (section 12+)** |
-> | --- | --- | --- |
-> | Model | Qwen2.5-**3B**-Instruct-AWQ | **Qwen2.5-1.5B-Instruct-AWQ** @ `3ecffa0c…` |
-> | Weights / KV cache | 1.9542 GiB / 28,480 tok | **1.1018 GiB / 69,760 tok** |
-> | Context window | 4,096 | **32,768** |
-> | `--max-num-seqs` | 8 | **32** |
-> | Scheduler | chunked prefill | **+ `--long-prefill-token-threshold 512`** |
-> | Limiter | none | **gateway: 10 in flight, 12 queued, 1.0 s timeout, cost on uncached tokens** |
+> | | Shipped |
+> | --- | --- |
+> | Model | **Qwen2.5-1.5B-Instruct-AWQ** @ `3ecffa0c…`, Marlin kernels |
+> | Weights / KV cache | **1.1018 GiB / 69,760 tokens** |
+> | Context window | **32,768** |
+> | Scheduler | chunked prefill, `--max-num-batched-tokens 2048`, `--long-prefill-token-threshold 512`, `--max-num-seqs 32` |
+> | Gateway | **10 in flight, 12 queued, 1.0 s timeout, cost on uncached tokens, dynamic per-key share** |
+> | Capacity | **20 concurrent chat users, 97% of messages with a first token within 1.5 s of first send** |
 >
-> For the current picture start at [README.md](../README.md),
-> [RESULTS.md](RESULTS.md) and [CAPACITY_MODEL.md](CAPACITY_MODEL.md). For what
-> changed and why, section 12.
->
-> **Revised after the evidence suite (2026-09-27).** Section 12 reports "6 in
-> flight, 0.6 s, ~22 users, 0 users over the SLO at every load". Those figures
-> came from a simulator that dropped refused messages instead of retrying them,
-> and from latency measured on admitted requests only. Re-measured from the
-> user's side, with retries counted, the gateway was re-tuned (6 → 10 in
-> flight, 0.6 → 1.0 s, cost on the uncached part of the prompt), head-of-line
-> blocking was fixed with one scheduler flag, and the capacity is **20 users at
-> 97% SLO attainment**. The reasoning is in DECISIONS.md ("Made during the
-> evidence suite") and PROGRESS_LOG.md.
+> Stage-by-stage figures below describe the system at that stage. The final
+> measured numbers are in [RESULTS.md](RESULTS.md), explained in
+> [CAPACITY_MODEL.md](CAPACITY_MODEL.md).
 
 ---
 

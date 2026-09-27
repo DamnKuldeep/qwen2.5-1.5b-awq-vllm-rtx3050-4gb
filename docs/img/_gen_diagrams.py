@@ -85,6 +85,95 @@ def svg_open(w, h, t):
 
 
 # ---------------------------------------------------------------------------
+# 0. Architecture - the components and what talks to what
+# ---------------------------------------------------------------------------
+
+def diagram_architecture(t):
+    W, H = 900, 480
+    s = [svg_open(W, H, t)]
+    s.append(text(28, 34, "One GPU, one engine, one gateway that decides what reaches it",
+                  t["ink"], 17, 650))
+    s.append(text(28, 55, "Every request crosses the gateway; the engine never sees load it cannot serve.",
+                  t["dim"], 12.5))
+
+    def module(x, y, w, title, sub, col):
+        out = [rect(x, y, w, 40, t["bg"], t["line"], 6),
+               f'<rect x="{x}" y="{y}" width="3" height="40" rx="1.5" fill="{col}"/>',
+               text(x + 12, y + 17, title, t["ink"], 12, 620),
+               text(x + 12, y + 32, sub, t["dim"], 10.5)]
+        return "".join(out)
+
+    top, bot = 84, 318
+
+    # clients
+    s.append(rect(28, top, 140, bot - top, t["panel"], t["line"]))
+    s.append(text(44, top + 26, "Clients", t["ink"], 13.5, 650))
+    for i, (a, b) in enumerate([("Chat UI", "/chat, streaming"),
+                                ("OpenAI SDK", "any client, base_url"),
+                                ("chat_sim.py", "retrying load"),
+                                ("failure tests", "14 injected cases")]):
+        y = top + 50 + i * 44
+        s.append(text(44, y, a, t["ink"], 12, 600))
+        s.append(text(44, y + 15, b, t["faint"], 10.5))
+
+    # gateway
+    gx, gw = 200, 300
+    s.append(rect(gx, top, gw, bot - top, t["panel"], t["line"]))
+    s.append(text(gx + 16, top + 26, "Gateway", t["ink"], 13.5, 650))
+    s.append(text(gx + gw - 16, top + 26, "FastAPI :8080", t["faint"], 11, 400, "end", MONO))
+    mods = [("Auth and budgets", "API keys · token budgets · 429", t["warn"]),
+            ("Context policy", "trim oldest turns · exact-count 413", t["warn"]),
+            ("Admission control", "10 slots · uncached-token cost · fair share", t["bad"]),
+            ("Streaming proxy", "billed in finally · 300 s stream cap", t["accent"])]
+    for i, (a, b, col) in enumerate(mods):
+        s.append(module(gx + 14, top + 44 + i * 47, gw - 28, a, b, col))
+
+    # engine
+    ex, ew = 580, 292
+    s.append(rect(ex, top, ew, bot - top, t["panel2"], t["line"]))
+    s.append(text(ex + 16, top + 26, "vLLM 0.11", t["gpu"], 13.5, 650))
+    s.append(text(ex + ew - 16, top + 26, "V1 engine :8000", t["faint"], 11, 400, "end", MONO))
+    emods = [("Qwen2.5-1.5B-Instruct AWQ", "Marlin kernels · 1.10 GiB weights"),
+             ("Scheduler", "chunked prefill 2,048 · long cap 512"),
+             ("Paged KV cache", "69,760-token pool · prefix caching"),
+             ("RTX 3050 Laptop", "4 GiB · 35 W · 32k context")]
+    for i, (a, b) in enumerate(emods):
+        s.append(module(ex + 14, top + 44 + i * 47, ew - 28, a, b, t["gpu"]))
+
+    # request path
+    mid = top + 120
+    s.append(arrow(168 + 4, mid, gx - 4, mid, t["dim"], "HTTP", None, 1.8))
+    s.append(arrow(gx + gw + 4, mid - 12, ex - 4, mid - 12, t["good"], "admitted", None, 1.8))
+    s.append(arrow(gx + gw + 4, mid + 34, ex - 4, mid + 34, t["faint"], "/tokenize", "4 3", 1.4))
+
+    # bottom row
+    by, bh = 356, 72
+    boxes = [
+        (gx, 160, "SQLite ledger", "WAL · usage and budgets", "breaker fails closed", t["warn"]),
+        (390, 180, "Prometheus", ":9090 · scrapes both", "10 predictive alerts", t["accent"]),
+        (600, 272, "Grafana", ":3000 · two dashboards", "engine + admission view", t["accent"]),
+    ]
+    for x, w, a, b, c, col in boxes:
+        s.append(rect(x, by, w, bh, t["panel"], t["line"]))
+        s.append(f'<rect x="{x}" y="{by}" width="{w}" height="3" rx="1.5" fill="{col}"/>')
+        s.append(text(x + 14, by + 25, a, t["ink"], 12.5, 620))
+        s.append(text(x + 14, by + 43, b, t["dim"], 10.5))
+        s.append(text(x + 14, by + 59, c, t["faint"], 10.5))
+
+    s.append(arrow(gx + 80, bot + 4, gx + 80, by - 4, t["dim"]))
+    px = 480
+    s.append(arrow(px, by - 4, gx + gw - 60, bot + 4, t["faint"], None, "4 3", 1.3))
+    s.append(arrow(px + 40, by - 4, ex + 60, bot + 4, t["faint"], None, "4 3", 1.3))
+    s.append(text(px + 20, by - 14, "scrape /metrics", t["faint"], 10.5, 500, "middle"))
+    s.append(arrow(570 + 4, by + bh / 2, 600 - 4, by + bh / 2, t["dim"]))
+
+    s.append(text(28, H - 18, "docker compose: vllm + gateway, with Prometheus and Grafana "
+                  "behind the observability profile", t["faint"], 10.5))
+    s.append("</svg>")
+    return "".join(s)
+
+
+# ---------------------------------------------------------------------------
 # 1. Request lifecycle - what happens to one request, and where it can stop
 # ---------------------------------------------------------------------------
 
@@ -324,6 +413,7 @@ def diagram_concurrency(t):
 # ---------------------------------------------------------------------------
 
 DIAGRAMS = {
+    "architecture": diagram_architecture,
     "request-lifecycle": diagram_lifecycle,
     "degradation": diagram_degradation,
     "concurrency": diagram_concurrency,
