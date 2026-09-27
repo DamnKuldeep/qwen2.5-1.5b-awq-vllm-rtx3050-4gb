@@ -328,10 +328,21 @@ def diagram_degradation(t):
         below = p["attain"] < p["first"] - 1
         s.append(text(x, py(p["attain"]) + (20 if below else -12), f"{p['attain']:.0f}%",
                       t["good"], 11.5, 650, "middle", MONO))
-        s.append(text(x, BOT + 22, str(p["users"]), t["ink"], 12.5, 600, "middle", MONO))
-        s.append(text(x, BOT + 40, f"{p['within']}/{p['total']} users ok",
-                      t["good"] if p["within"] == p["total"] else t["dim"], 10.5, 500, "middle"))
-    s.append(text((L + R) / 2, BOT + 66, "simulated chat users", t["dim"], 12, 500, "middle"))
+        s.append(text(x, BOT + 24, str(p["users"]), t["ink"], 12.5, 600, "middle", MONO))
+        s.append(text(x, BOT + 48, f"{p['within']}/{p['total']}",
+                      t["good"] if p["within"] == p["total"] else t["dim"], 11.5, 600,
+                      "middle", MONO))
+
+    # Row captions, read like a table: the percentages above count MESSAGES,
+    # the fractions in the second row count PEOPLE. Unlabelled, "35%" next to
+    # "0/40" read as a contradiction.
+    cap_x = R + 28
+    s.append(text(cap_x, BOT + 24, "← simulated chat users", t["dim"], 11.5, 500))
+    s.append(text(cap_x, BOT + 48, "← users with every message on time", t["dim"], 11.5, 500))
+    ymid = (TOP + BOT) / 2
+    s.append(f'<text x="22" y="{ymid:.0f}" fill="{t["dim"]}" font-family="{FONT}" font-size="11.5" '
+             f'font-weight="500" text-anchor="middle" transform="rotate(-90 22 {ymid:.0f})">'
+             f'share of messages</text>')
     s.append(f'<line x1="{L}" y1="{TOP}" x2="{L}" y2="{BOT}" stroke="{t["line"]}" stroke-width="1.4"/>')
     s.append(f'<line x1="{L}" y1="{BOT}" x2="{R}" y2="{BOT}" stroke="{t["line"]}" stroke-width="1.4"/>')
 
@@ -343,7 +354,7 @@ def diagram_degradation(t):
     s.append(f'<line x1="{PX+14}" y1="{TOP+46}" x2="{PX+40}" y2="{TOP+46}" '
              f'stroke="{t["accent"]}" stroke-width="1.8" stroke-dasharray="5 4"/>')
     s.append(text(PX + 48, TOP + 50, "served on the first try", t["ink"], 11.5, 600))
-    s.append(text(PX + 14, TOP + 76, "share of all messages sent", t["faint"], 10.5))
+    s.append(text(PX + 14, TOP + 76, "% of all messages sent, not of users", t["faint"], 10.5))
 
     # The lesson: the engine's view and the user's view of the same run.
     # The first level below target is where the two views part company most

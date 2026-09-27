@@ -66,7 +66,7 @@ def row(d, label=None):
 
 
 HEAD = ("| scenario | users | SLO attainment | served first try | never served | "
-        "TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users within SLO | "
+        "TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users with every message on time | "
         "out tok/s | mean prompt | cache hit % | preempt |\n"
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: |")
 

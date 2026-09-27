@@ -31,7 +31,7 @@ The column **TTFT p95, admitted** is the engine's view: latency of the requests 
 
 ## 1. Capacity
 
-| scenario | users | SLO attainment | served first try | never served | TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users within SLO | out tok/s | mean prompt | cache hit % | preempt |
+| scenario | users | SLO attainment | served first try | never served | TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users with every message on time | out tok/s | mean prompt | cache hit % | preempt |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: |
 | steady, 10 users | 10 | **100%** ✅ | 100% | 0 | 166.1 | 853.9 | 853.9 | 10/10 | 92 | 979 | 79 | 0 |
 | steady, 20 users | 20 | **97%** ✅ | 97% | 0 | 243.3 | 1123.5 | 839.8 | 17/20 | 182 | 959 | 88 | 0 |
@@ -55,7 +55,7 @@ The column **TTFT p95, admitted** is the engine's view: latency of the requests 
 
 ## 2. Traffic shapes a real service meets
 
-| scenario | users | SLO attainment | served first try | never served | TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users within SLO | out tok/s | mean prompt | cache hit % | preempt |
+| scenario | users | SLO attainment | served first try | never served | TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users with every message on time | out tok/s | mean prompt | cache hit % | preempt |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: |
 | burst (4x spike mid-run) | 80 | **11%** ❌ | 24% | 51 | 9277.1 | 61683.3 | 2983.4 | 0/80 | 188 | 539 | 73 | 0 |
 | thundering herd (all at once) | 60 | **9%** ❌ | 12% | 35 | 13514.3 | 82087.2 | 3230.2 | 0/60 | 202 | 615 | 63 | 0 |
@@ -66,7 +66,7 @@ Spikes well past capacity fail on attainment, not on correctness: nothing errors
 
 ## 3. Conversation length
 
-| scenario | users | SLO attainment | served first try | never served | TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users within SLO | out tok/s | mean prompt | cache hit % | preempt |
+| scenario | users | SLO attainment | served first try | never served | TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users with every message on time | out tok/s | mean prompt | cache hit % | preempt |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: |
 | ~300-token openings | 20 | **88%** ⚠️ | 92% | 0 | 401.0 | 3999.3 | 1494.3 | 8/20 | 181 | 588 | 82 | 0 |
 | ~2,000-token openings | 20 | **60%** ❌ | 64% | 0 | 605.7 | 37953.7 | 2914.4 | 1/20 | 134 | 1808 | 74 | 0 |
@@ -76,7 +76,7 @@ Every user in the long-conversation runs opens by pasting that much context, so 
 
 ## 4. Fairness under an abusive client
 
-| scenario | users | SLO attainment | served first try | never served | TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users within SLO | out tok/s | mean prompt | cache hit % | preempt |
+| scenario | users | SLO attainment | served first try | never served | TTFT p50, user | TTFT p95, user | TTFT p95, admitted | users with every message on time | out tok/s | mean prompt | cache hit % | preempt |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: |
 | 10 normal users + 1 abusive key at 50 concurrent | 10 | **94%** ✅ | 94% | 0 | 511.8 | 3660.1 | 1165.1 | 7/10 | 89 | 887 | 83 | 0 |
 
